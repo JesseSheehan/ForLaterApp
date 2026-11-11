@@ -11,6 +11,9 @@ struct AnalysisResult {
     var categoryName: String?
     var link: String?
     var notes: String = ""
+    /// For events: when it happens, as found in the screenshot.
+    var dueDate: Date?
+    var dueHasTime = false
     var usedLanguageModel = false
 }
 
@@ -25,6 +28,12 @@ struct ScreenshotSummary {
 
     @Guide(description: "One or two short sentences with the useful details: what the image shows, plus any date, time, venue, price or who it is for. For a list of event dates, give the date and venue closest to the person's location. Empty if nothing useful.")
     var notes: String
+
+    @Guide(description: "If this is an event, the date it happens as yyyy-MM-dd, choosing the one closest to the person's location. Use the next upcoming year if no year is shown. Empty if not an event.")
+    var eventDate: String
+
+    @Guide(description: "If the event shows a start time, that time as 24-hour HH:mm. Empty otherwise.")
+    var eventTime: String
 }
 
 /// What Vision finds in a screenshot before the language model sees it.
@@ -61,6 +70,10 @@ enum ScreenshotAnalyzer {
             result.title = summary.title
             result.categoryName = matchCategory(summary.category, in: categoryNames)
             result.notes = summary.notes
+            if let due = parseEventDate(summary.eventDate, time: summary.eventTime) {
+                result.dueDate = due.date
+                result.dueHasTime = due.hasTime
+            }
             result.usedLanguageModel = true
         } else {
             // Fallback: first line of text (or what Vision saw) as the title, category Other.
@@ -87,7 +100,30 @@ enum ScreenshotAnalyzer {
            let match = categories.first(where: { $0.name == name }) {
             item.category = match
         }
+        if item.dueDate == nil, item.category?.name == "Events", let due = result.dueDate {
+            item.dueDate = due
+            item.dueHasTime = result.dueHasTime
+        }
         item.needsAnalysis = false
+    }
+
+    /// Turns the model's "yyyy-MM-dd" and "HH:mm" strings into a date.
+    private static func parseEventDate(_ dateText: String, time timeText: String) -> (date: Date, hasTime: Bool)? {
+        let dayFormatter = DateFormatter()
+        dayFormatter.locale = Locale(identifier: "en_US_POSIX")
+        dayFormatter.timeZone = .current
+        dayFormatter.dateFormat = "yyyy-MM-dd"
+        guard let day = dayFormatter.date(from: dateText.trimmingCharacters(in: .whitespaces)) else { return nil }
+        // Ignore dates more than a day in the past; the model guessed a wrong year.
+        guard day > Date().addingTimeInterval(-86_400) else { return nil }
+
+        let parts = timeText.trimmingCharacters(in: .whitespaces).split(separator: ":")
+        if parts.count == 2, let hour = Int(parts[0]), let minute = Int(parts[1]),
+           (0..<24).contains(hour), (0..<60).contains(minute),
+           let withTime = Calendar.current.date(bySettingHour: hour, minute: minute, second: 0, of: day) {
+            return (withTime, true)
+        }
+        return (day, false)
     }
 
     /// Analyzes every item that was saved before the AI got to it.

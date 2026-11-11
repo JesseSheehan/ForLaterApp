@@ -22,6 +22,9 @@ final class ForLaterItem {
     var isStarter: Bool = false
     @Attribute(.externalStorage) var screenshot: Data?
     var category: ForLaterCategory?
+    /// Optional due date for events. When `dueHasTime` is false only the day matters.
+    var dueDate: Date?
+    var dueHasTime: Bool = false
 
     init(title: String = "", screenshot: Data? = nil, link: String = "") {
         self.title = title
@@ -32,6 +35,56 @@ final class ForLaterItem {
     }
 
     var isCompleted: Bool { completedAt != nil }
+
+    /// The moment the item becomes overdue: the due time, or the end of the due day.
+    var dueDeadline: Date? {
+        guard let dueDate else { return nil }
+        if dueHasTime { return dueDate }
+        let startOfDay = Calendar.current.startOfDay(for: dueDate)
+        return Calendar.current.date(byAdding: .day, value: 1, to: startOfDay)
+    }
+
+    func isOverdue(at now: Date = Date()) -> Bool {
+        guard completedAt == nil, let deadline = dueDeadline else { return false }
+        return now >= deadline
+    }
+
+    var dueLabel: String? {
+        guard let dueDate else { return nil }
+        return dueHasTime
+            ? dueDate.formatted(date: .abbreviated, time: .shortened)
+            : dueDate.formatted(date: .abbreviated, time: .omitted)
+    }
+
+    /// Sets the due time. If the due day is today and that time has already
+    /// passed, the due day moves to tomorrow. A later day is left alone.
+    func setDueTime(hour: Int, minute: Int, now: Date = Date()) {
+        let calendar = Calendar.current
+        let day = calendar.startOfDay(for: dueDate ?? now)
+        var due = calendar.date(bySettingHour: hour, minute: minute, second: 0, of: day) ?? day
+        if calendar.isDate(day, inSameDayAs: now), due <= now {
+            due = calendar.date(byAdding: .day, value: 1, to: due) ?? due
+        }
+        dueDate = due
+        dueHasTime = true
+    }
+
+    /// Sets the due day, keeping any time already chosen.
+    func setDueDay(_ day: Date) {
+        let calendar = Calendar.current
+        let start = calendar.startOfDay(for: day)
+        if dueHasTime, let current = dueDate {
+            let parts = calendar.dateComponents([.hour, .minute], from: current)
+            dueDate = calendar.date(bySettingHour: parts.hour ?? 0, minute: parts.minute ?? 0, second: 0, of: start)
+        } else {
+            dueDate = start
+        }
+    }
+
+    func clearDueTime() {
+        dueHasTime = false
+        if let dueDate { self.dueDate = Calendar.current.startOfDay(for: dueDate) }
+    }
 }
 
 @Model

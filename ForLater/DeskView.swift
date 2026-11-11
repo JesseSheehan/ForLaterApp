@@ -76,21 +76,12 @@ struct DeskView: View {
                         description: Text("Items you file under this category show up here.")
                     )
                 } else {
-                    List {
-                        ForEach(visibleItems) { item in
-                            DeskRow(item: item, onComplete: { complete(item) })
-                                .contentShape(Rectangle())
-                                .onTapGesture { cardSheet = CardSheet(item: item, isNew: false) }
-                                .swipeActions(edge: .leading) {
-                                    Button("Done") { complete(item) }
-                                        .tint(.green)
-                                }
-                                .swipeActions(edge: .trailing) {
-                                    Button("Delete", role: .destructive) { delete(item) }
-                                }
-                        }
-                    }
-                    .listStyle(.plain)
+                    DeskCarousel(
+                        items: visibleItems,
+                        onOpen: { cardSheet = CardSheet(item: $0, isNew: false) },
+                        onComplete: complete,
+                        onDelete: delete
+                    )
                 }
             }
             .safeAreaInset(edge: .top) {
@@ -235,46 +226,153 @@ private struct CategoryTabs: View {
     }
 }
 
-private struct DeskRow: View {
-    let item: ForLaterItem
-    let onComplete: () -> Void
+/// The desk as a row of cards you swipe left and right through.
+private struct DeskCarousel: View {
+    let items: [ForLaterItem]
+    let onOpen: (ForLaterItem) -> Void
+    let onComplete: (ForLaterItem) -> Void
+    let onDelete: (ForLaterItem) -> Void
+
+    @State private var currentID: PersistentIdentifier?
+
+    private var currentIndex: Int {
+        guard let currentID,
+              let index = items.firstIndex(where: { $0.persistentModelID == currentID }) else { return 0 }
+        return index
+    }
 
     var body: some View {
-        HStack(spacing: 12) {
-            Button(action: onComplete) {
-                Image(systemName: "circle")
-                    .font(.title2)
-                    .foregroundStyle(.tint)
+        VStack(spacing: 12) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 14) {
+                    ForEach(items) { item in
+                        // Re-checks every minute so cards turn red when they pass their due date.
+                        TimelineView(.everyMinute) { timeline in
+                            DeskCard(
+                                item: item,
+                                now: timeline.date,
+                                onOpen: { onOpen(item) },
+                                onComplete: { onComplete(item) },
+                                onDelete: { onDelete(item) }
+                            )
+                        }
+                        .containerRelativeFrame(.horizontal)
+                    }
+                }
+                .scrollTargetLayout()
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Mark as done")
+            .contentMargins(.horizontal, 24, for: .scrollContent)
+            .scrollTargetBehavior(.viewAligned)
+            .scrollPosition(id: $currentID)
 
+            Text("\(min(currentIndex + 1, items.count)) of \(items.count)")
+                .font(.footnote)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 12)
+    }
+}
+
+private struct DeskCard: View {
+    let item: ForLaterItem
+    let now: Date
+    let onOpen: () -> Void
+    let onComplete: () -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        let overdue = item.isOverdue(at: now)
+        let shape = RoundedRectangle(cornerRadius: 22, style: .continuous)
+
+        VStack(alignment: .leading, spacing: 12) {
             if let data = item.screenshot, let image = UIImage(data: data) {
                 Image(uiImage: image)
                     .resizable()
-                    .scaledToFill()
-                    .frame(width: 48, height: 48)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .scaledToFit()
+                    .frame(maxWidth: .infinity, maxHeight: 300)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(item.title.isEmpty ? "Untitled" : item.title)
-                    .font(.headline)
-                    .lineLimit(2)
-                HStack(spacing: 6) {
-                    if let category = item.category {
-                        Text(category.name)
-                    }
-                    Text(item.remindAt.formatted(date: .abbreviated, time: .shortened))
+            HStack {
+                Text(item.category?.name ?? "No category")
+                    .font(.caption.weight(.medium))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(.fill.tertiary, in: Capsule())
+                Spacer()
+                if overdue {
+                    Label("Overdue", systemImage: "exclamationmark.circle.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Color.red)
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            }
+
+            Text(item.title.isEmpty ? "Untitled" : item.title)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(overdue ? Color.red : Color.primary)
+                .lineLimit(3)
+
+            if !item.notes.isEmpty {
+                Text(item.notes)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(4)
+            }
+
+            if !item.link.isEmpty, let url = URL(string: item.link) {
+                Link(destination: url) {
+                    Label(url.host() ?? item.link, systemImage: "link")
+                        .lineLimit(1)
+                }
+                .font(.subheadline)
+            }
+
+            Spacer(minLength: 0)
+
+            VStack(alignment: .leading, spacing: 4) {
+                if let due = item.dueLabel {
+                    Label("Due \(due)", systemImage: "calendar")
+                        .foregroundStyle(overdue ? Color.red : Color.secondary)
+                }
+                Label("Reminder \(item.remindAt.formatted(date: .abbreviated, time: .shortened))", systemImage: "bell")
+                    .foregroundStyle(.secondary)
                 if item.needsAnalysis {
-                    Text("Waiting for AI…")
-                        .font(.caption2)
+                    Label("Waiting for AI…", systemImage: "sparkles")
                         .foregroundStyle(.secondary)
                 }
             }
+            .font(.footnote)
+
+            HStack(spacing: 10) {
+                Button(action: onComplete) {
+                    Label("Done", systemImage: "checkmark")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button(action: onOpen) {
+                    Label("Edit", systemImage: "pencil")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+
+                Menu {
+                    Button("Delete", systemImage: "trash", role: .destructive, action: onDelete)
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .frame(width: 30)
+                }
+                .buttonStyle(.bordered)
+                .accessibilityLabel("More")
+            }
+            .controlSize(.large)
         }
+        .padding(16)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(shape.fill(overdue ? Color.red.opacity(0.08) : Color(.secondarySystemBackground)))
+        .overlay(shape.strokeBorder(overdue ? Color.red : Color.clear, lineWidth: 2))
+        .contentShape(shape)
+        .onTapGesture(perform: onOpen)
     }
 }

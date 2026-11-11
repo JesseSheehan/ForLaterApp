@@ -77,6 +77,28 @@ struct ForLaterCardView: View {
                 Button("New category…") { showingNewCategory = true }
             }
 
+            if item.category?.name == "Events" || item.dueDate != nil {
+                Section {
+                    Toggle("Due date", isOn: dueDateEnabled)
+                    if item.dueDate != nil {
+                        DatePicker("Date", selection: dueDayBinding, displayedComponents: .date)
+                        Toggle("Include a time", isOn: dueTimeEnabled)
+                        if item.dueHasTime {
+                            DatePicker("Time", selection: dueTimeBinding, displayedComponents: .hourAndMinute)
+                        }
+                    }
+                } header: {
+                    Text("Due date")
+                } footer: {
+                    if item.isOverdue() {
+                        Text("This is past its due date.")
+                            .foregroundStyle(.red)
+                    } else {
+                        Text("Optional. Leave the time off if only the day matters.")
+                    }
+                }
+            }
+
             Section {
                 Picker("Remind me", selection: $reminderChoice) {
                     ForEach(checkInTimes) { time in
@@ -153,6 +175,56 @@ struct ForLaterCardView: View {
             Button("Cancel", role: .cancel) { newCategoryName = "" }
             Button("Add") { addCategory() }
         }
+    }
+
+    // MARK: Due date bindings
+
+    private var dueDateEnabled: Binding<Bool> {
+        Binding(
+            get: { item.dueDate != nil },
+            set: { isOn in
+                if isOn {
+                    item.dueDate = Calendar.current.startOfDay(for: Date())
+                    item.dueHasTime = false
+                } else {
+                    item.dueDate = nil
+                    item.dueHasTime = false
+                }
+            }
+        )
+    }
+
+    private var dueTimeEnabled: Binding<Bool> {
+        Binding(
+            get: { item.dueHasTime },
+            set: { isOn in
+                if isOn {
+                    // Start at the next whole hour. If that has already passed
+                    // on the chosen day (only possible today), it moves to tomorrow.
+                    let hour = Calendar.current.component(.hour, from: Date())
+                    item.setDueTime(hour: (hour + 1) % 24, minute: 0)
+                } else {
+                    item.clearDueTime()
+                }
+            }
+        )
+    }
+
+    private var dueDayBinding: Binding<Date> {
+        Binding(
+            get: { item.dueDate ?? Date() },
+            set: { item.setDueDay($0) }
+        )
+    }
+
+    private var dueTimeBinding: Binding<Date> {
+        Binding(
+            get: { item.dueDate ?? Date() },
+            set: { newValue in
+                let parts = Calendar.current.dateComponents([.hour, .minute], from: newValue)
+                item.setDueTime(hour: parts.hour ?? 0, minute: parts.minute ?? 0)
+            }
+        )
     }
 
     private var screenshotImage: UIImage? {
