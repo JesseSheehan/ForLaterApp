@@ -320,6 +320,7 @@ private struct DeskCarousel: View {
                             DeskCard(
                                 item: item,
                                 now: timeline.date,
+                                isFocused: item.persistentModelID == (currentID ?? items.first?.persistentModelID),
                                 onOpen: { onOpen(item) },
                                 onDone: { onDone(item) }
                             )
@@ -390,6 +391,8 @@ private struct SwipeIndicator: View {
 private struct DeskCard: View {
     let item: ForLaterItem
     let now: Date
+    /// The card in the middle of the carousel. Only that one shakes.
+    let isFocused: Bool
     let onOpen: () -> Void
     let onDone: () -> Void
 
@@ -463,7 +466,7 @@ private struct DeskCard: View {
         .overlay(shape.strokeBorder(highlight ?? Color.clear, lineWidth: 2))
         .contentShape(shape)
         .onTapGesture(perform: onOpen)
-        .overdueShake(item.isOverdue(at: now))
+        .overdueShake(item.isOverdue(at: now), isFocused: isFocused && !isLeaving)
         // Done: the card shrinks, tilts and flies up and away into the archive.
         .scaleEffect(isLeaving && !reduceMotion ? 0.75 : 1)
         .rotationEffect(.degrees(isLeaving && !reduceMotion ? -8 : 0))

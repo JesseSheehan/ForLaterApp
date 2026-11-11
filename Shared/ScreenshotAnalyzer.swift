@@ -73,8 +73,6 @@ enum ScreenshotAnalyzer {
     /// using as much AI as the user allows. Each step builds on the one before:
     /// 1. Vision/OCR: reads text, links and dates and recognizes objects in photos.
     /// 2. On-device AI: writes a specific title, picks the category, adds notes.
-    /// 3. Private Cloud Compute (Full AI only): used when on-device AI isn't
-    ///    available or fails.
     static func analyze(imageData: Data?, sharedLink: String?, sharedText: String? = nil, context: AnalysisContext) async -> AnalysisResult {
         guard context.mode != .manual else { return AnalysisResult() }
 
@@ -92,19 +90,10 @@ enum ScreenshotAnalyzer {
         guard needsAI else { return result }
 
         // Step 2: on-device AI.
-        if let summary = await summarize(using: .onDevice, findings: findings, imageData: imageData,
+        if let summary = await summarize(findings: findings, imageData: imageData,
                                          link: result.link, sharedText: sharedText, context: context) {
             merge(summary, into: &result, categoryNames: context.categoryNames)
             result.engine = .onDevice
-            return result
-        }
-
-        // Step 3: Private Cloud Compute, only with Full AI.
-        if context.mode == .full,
-           let summary = await summarize(using: .cloud, findings: findings, imageData: imageData,
-                                         link: result.link, sharedText: sharedText, context: context) {
-            merge(summary, into: &result, categoryNames: context.categoryNames)
-            result.engine = .cloud
         }
         return result
     }
@@ -271,19 +260,6 @@ enum ScreenshotAnalyzer {
         SystemLanguageModel.default.isAvailable
     }
 
-    /// Whether Apple's Private Cloud Compute model can be used right now. Needs
-    /// iOS 27, the PCC entitlement for this app, a network connection and quota.
-    static var isCloudModelAvailable: Bool {
-        if #available(iOS 27.0, *) {
-            return PrivateCloudComputeLanguageModel().isAvailable
-        }
-        return false
-    }
-
-    private enum ModelChoice {
-        case onDevice, cloud
-    }
-
     private static let instructions = """
     You help someone save things from screenshots and shared links so they can come back to them later. \
     You get the screenshot and the text read from it. Work out what the person most likely \
@@ -296,18 +272,9 @@ enum ScreenshotAnalyzer {
     person's location.
     """
 
-    private static func summarize(using choice: ModelChoice, findings: VisionFindings, imageData: Data?, link: String?, sharedText: String?, context: AnalysisContext) async -> ScreenshotSummary? {
-        let makeSession: () -> LanguageModelSession
-        switch choice {
-        case .onDevice:
-            guard isLanguageModelAvailable else { return nil }
-            makeSession = { LanguageModelSession(instructions: instructions) }
-        case .cloud:
-            guard #available(iOS 27.0, *) else { return nil }
-            let model = PrivateCloudComputeLanguageModel()
-            guard model.isAvailable else { return nil }
-            makeSession = { LanguageModelSession(model: model, instructions: instructions) }
-        }
+    private static func summarize(findings: VisionFindings, imageData: Data?, link: String?, sharedText: String?, context: AnalysisContext) async -> ScreenshotSummary? {
+        guard isLanguageModelAvailable else { return nil }
+        let makeSession = { LanguageModelSession(instructions: instructions) }
 
         let prompt = makePrompt(findings: findings, link: link, sharedText: sharedText, context: context)
 

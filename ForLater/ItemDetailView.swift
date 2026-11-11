@@ -74,7 +74,7 @@ struct ItemDetailView: View {
                     infoRow("Reminder", item.remindAt.formatted(date: .abbreviated, time: .shortened), systemImage: "bell")
                     infoRow("Added", item.createdAt.formatted(date: .abbreviated, time: .shortened), systemImage: "plus.circle")
                     if let engine = AnalysisEngine(rawValue: item.analysisEngineRaw), engine != .none {
-                        infoRow("Filled in by", engine.label, systemImage: engine == .cloud ? "icloud" : "cpu")
+                        infoRow("Filled in by", engine.label, systemImage: "cpu")
                     }
                     if let revivedAt = item.revivedAt, item.isRevived {
                         infoRow("Revived", revivedAt.formatted(date: .abbreviated, time: .shortened),

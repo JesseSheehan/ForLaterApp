@@ -161,7 +161,7 @@ private struct AIUsageSection: View {
                 .buttonStyle(.plain)
             }
 
-            if settings.aiMode == .onDevice || settings.aiMode == .full {
+            if settings.aiMode == .onDevice {
                 Toggle(isOn: $settings.aiAlwaysRefines) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Always polish with AI")
@@ -176,7 +176,7 @@ private struct AIUsageSection: View {
         } header: {
             Text("AI Usage")
         } footer: {
-            Text("Each level adds to the one before it: text recognition first, then on-device AI, then Private Cloud Compute only when needed. On-device AI is the best balance of privacy and results.")
+            Text("Each level adds to the one before it: text recognition first, then on-device AI. Everything runs on your iPhone, and nothing is sent to a server.")
         }
     }
 
@@ -184,8 +184,6 @@ private struct AIUsageSection: View {
         switch mode {
         case .onDevice where !ScreenshotAnalyzer.isLanguageModelAvailable:
             return "On-device AI isn't available on this iPhone right now (it needs Apple Intelligence), so text recognition is used instead."
-        case .full where !ScreenshotAnalyzer.isCloudModelAvailable:
-            return "Private Cloud Compute isn't available right now, so on-device AI is used."
         default:
             return nil
         }

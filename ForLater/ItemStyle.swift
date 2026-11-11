@@ -49,28 +49,49 @@ private struct ShakeEffect: GeometryEffect {
     }
 }
 
-/// Shakes the view now and every 15 seconds while it's overdue.
-/// Skipped when the user has Reduce Motion turned on.
+/// Shakes an overdue view as soon as it's fully on screen (and, for the cards,
+/// the one in focus), then every 15 seconds while it stays there. Swiping or
+/// scrolling away stops the timer; coming back shakes it right away and starts
+/// the timer again. Skipped when the user has Reduce Motion turned on.
 private struct OverdueShake: ViewModifier {
     let isOverdue: Bool
+    let isFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var isFullyVisible = false
     @State private var shakes: CGFloat = 0
+
+    private var shouldShake: Bool {
+        isOverdue && isFocused && isFullyVisible && scenePhase == .active && !reduceMotion
+    }
 
     func body(content: Content) -> some View {
         content
+            // Measured before the shake is applied, so the shake itself never
+            // nudges the view "off screen" and stops the timer.
+            .onGeometryChange(for: Bool.self) { proxy in
+                Self.isFullyOnScreen(proxy.frame(in: .global))
+            } action: { isFullyVisible = $0 }
             .modifier(ShakeEffect(animatableData: shakes))
-            .task(id: isOverdue) {
-                guard isOverdue, !reduceMotion else { return }
+            .task(id: shouldShake) {
+                guard shouldShake else { return }
                 while !Task.isCancelled {
                     withAnimation(.linear(duration: 0.5)) { shakes += 1 }
                     try? await Task.sleep(for: .seconds(15))
                 }
             }
     }
+
+    private static func isFullyOnScreen(_ frame: CGRect) -> Bool {
+        guard frame.width > 0, frame.height > 0 else { return false }
+        let screen = UIScreen.main.bounds.insetBy(dx: -1, dy: -1)
+        return screen.contains(frame)
+    }
 }
 
 extension View {
-    func overdueShake(_ isOverdue: Bool) -> some View {
-        modifier(OverdueShake(isOverdue: isOverdue))
+    /// - Parameter isFocused: false for a card that isn't the one in the middle.
+    func overdueShake(_ isOverdue: Bool, isFocused: Bool = true) -> some View {
+        modifier(OverdueShake(isOverdue: isOverdue, isFocused: isFocused))
     }
 }

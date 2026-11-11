@@ -288,9 +288,10 @@ enum DueOption: String, CaseIterable, Identifiable {
 }
 
 /// How much AI For Later uses. Each level adds to the one before it:
-/// Vision/OCR, then on-device AI, then Private Cloud Compute.
+/// Vision/OCR, then on-device AI. Everything stays on the device.
+/// (An old saved "full" value reads back as on-device AI.)
 enum AIMode: String, CaseIterable, Identifiable {
-    case manual, visionOnly, onDevice, full
+    case manual, visionOnly, onDevice
 
     var id: String { rawValue }
 
@@ -299,7 +300,6 @@ enum AIMode: String, CaseIterable, Identifiable {
         case .manual: "Manual"
         case .visionOnly: "Limited AI (Vision/OCR)"
         case .onDevice: "On-device AI"
-        case .full: "Full AI"
         }
     }
 
@@ -311,8 +311,6 @@ enum AIMode: String, CaseIterable, Identifiable {
             "Apple's Vision reads the text, links and dates in your screenshot and puts them in the right fields. No AI language model is used."
         case .onDevice:
             "Adds Apple's on-device AI to write clear titles, pick categories and understand photos. Everything runs on your iPhone; nothing is sent to any server."
-        case .full:
-            "Adds Apple's Private Cloud Compute, used only when on-device AI isn't available or can't handle a screenshot. Apple's secure servers process the request and don't keep it."
         }
     }
 
@@ -321,21 +319,19 @@ enum AIMode: String, CaseIterable, Identifiable {
         case .manual: "hand.point.up.left"
         case .visionOnly: "text.viewfinder"
         case .onDevice: "iphone"
-        case .full: "icloud"
         }
     }
 }
 
 /// Which step actually filled in a card.
 enum AnalysisEngine: String {
-    case none, vision, onDevice, cloud
+    case none, vision, onDevice
 
     var label: String {
         switch self {
         case .none: "You"
         case .vision: "Text recognition (on this device)"
         case .onDevice: "On-device AI"
-        case .cloud: "Private Cloud Compute"
         }
     }
 }
