@@ -38,7 +38,13 @@ enum DataStore {
         let categoryCount = (try? context.fetchCount(FetchDescriptor<ForLaterCategory>())) ?? 0
         if categoryCount == 0 {
             for (index, name) in ForLaterCategory.builtInNames.enumerated() {
-                context.insert(ForLaterCategory(name: name, isBuiltIn: true, sortOrder: index))
+                context.insert(ForLaterCategory(name: name, isBuiltIn: true, builtInKey: name.lowercased(), sortOrder: index))
+            }
+        } else {
+            // Categories created before renaming existed have no key yet.
+            let unkeyed = (try? context.fetch(FetchDescriptor<ForLaterCategory>(predicate: #Predicate { $0.isBuiltIn == true && $0.builtInKey == "" }))) ?? []
+            for category in unkeyed {
+                category.builtInKey = category.name.lowercased()
             }
         }
         // Onboarding (next phase) lets the user choose these. Until then, 6 PM.

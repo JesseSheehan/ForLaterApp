@@ -60,21 +60,17 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    ForEach(categories) { category in
-                        HStack {
-                            Text(category.name)
-                            Spacer()
-                            if category.isBuiltIn {
-                                Text("Built in").foregroundStyle(.secondary)
-                            }
+                    NavigationLink {
+                        CategoriesView()
+                    } label: {
+                        LabeledContent {
+                            Text("\(categories.count)")
+                        } label: {
+                            Label("Categories", systemImage: "square.grid.2x2")
                         }
-                        .deleteDisabled(category.isBuiltIn)
                     }
-                    .onDelete(perform: deleteCategories)
-                } header: {
-                    Text("Categories")
                 } footer: {
-                    Text("Add categories from any For Later card. Deleting one moves its items to Other.")
+                    Text("Reorder, rename, add or delete categories. The order here is the order of the tabs on your desk.")
                 }
             }
             .navigationTitle("Settings")
@@ -122,17 +118,6 @@ struct SettingsView: View {
         }
     }
 
-    private func deleteCategories(at offsets: IndexSet) {
-        let other = categories.first(where: { $0.isBuiltIn && $0.name == "Other" })
-        for index in offsets {
-            let category = categories[index]
-            guard !category.isBuiltIn else { continue }
-            for item in category.items ?? [] {
-                item.category = other
-            }
-            context.delete(category)
-        }
-    }
 }
 
 private struct HometownSection: View {

@@ -84,7 +84,7 @@ enum ScreenshotAnalyzer {
                 .first(where: { $0.count > 3 })
                 .map { String($0.prefix(60)) }
             result.title = firstLine ?? findings.labels.first?.capitalized ?? ""
-            result.categoryName = categoryNames.first(where: { $0 == "Other" })
+            result.categoryName = nil  // apply() files it under Other
         }
         return result
     }
@@ -96,12 +96,14 @@ enum ScreenshotAnalyzer {
         if overwrite || item.title.isEmpty, !result.title.isEmpty { item.title = result.title }
         if item.link.isEmpty, let link = result.link { item.link = link }
         if overwrite || item.notes.isEmpty, !result.notes.isEmpty { item.notes = result.notes }
-        if overwrite || item.category == nil || item.category?.name == "Other",
-           let name = result.categoryName,
-           let match = categories.first(where: { $0.name == name }) {
-            item.category = match
+        if overwrite || item.category == nil || item.category?.isOther == true {
+            if let name = result.categoryName, let match = categories.first(where: { $0.name == name }) {
+                item.category = match
+            } else if item.category == nil {
+                item.category = categories.first(where: { $0.isOther })
+            }
         }
-        if item.dueDate == nil, item.category?.name == "Events", let due = result.dueDate {
+        if item.dueDate == nil, item.category?.isEvents == true, let due = result.dueDate {
             item.dueDate = due
             item.dueHasTime = result.dueHasTime
             item.dueOptionRaw = DueOption.custom.rawValue
@@ -173,9 +175,11 @@ enum ScreenshotAnalyzer {
     You get the screenshot and the text read from it. Work out what the person most likely \
     wants to come back to, and describe it specifically, with names. If the screenshot is a \
     photo with little or no text, say what it shows. Choose the single best category from the \
-    list provided. Use Events for anything with a date or time to attend. Use Content for \
-    articles, videos, posts, products or things to read, watch or buy. Use Other when nothing \
-    else fits. If there are several dates or places, pick the one closest to the person's location.
+    list provided, using the person's own category names exactly. Prefer a category for events \
+    for anything with a date or time to attend, and a category for content for articles, videos, \
+    posts, products or things to read, watch or buy. Use the catch-all category (usually Other) \
+    when nothing else fits. If there are several dates or places, pick the one closest to the \
+    person's location.
     """
 
     private static func summarize(findings: VisionFindings, imageData: Data?, link: String?, sharedText: String?, categoryNames: [String], hometown: String?) async -> ScreenshotSummary? {
@@ -279,7 +283,6 @@ enum ScreenshotAnalyzer {
         let cleaned = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return names.first(where: { $0.lowercased() == cleaned })
             ?? names.first(where: { cleaned.contains($0.lowercased()) })
-            ?? names.first(where: { $0 == "Other" })
     }
 
     /// Shrinks big screenshots and stores them as JPEG to save space and sync time.

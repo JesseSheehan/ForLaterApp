@@ -77,7 +77,7 @@ struct ForLaterCardView: View {
                 Button("New category…") { showingNewCategory = true }
             }
 
-            if item.category?.name == "Events" || item.dueDate != nil {
+            if item.category?.isEvents == true || item.dueDate != nil {
                 Section {
                     Toggle("Due date", isOn: dueDateEnabled)
                     if item.dueDate != nil {

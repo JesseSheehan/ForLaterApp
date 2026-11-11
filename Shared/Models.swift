@@ -120,17 +120,26 @@ final class ForLaterItem {
 final class ForLaterCategory {
     var name: String = ""
     var isBuiltIn: Bool = false
+    /// Stable id for the starter categories ("events", "content", "other"),
+    /// so they keep working after the user renames them. Empty for user-made ones.
+    var builtInKey: String = ""
     var sortOrder: Int = 0
     @Relationship(deleteRule: .nullify, inverse: \ForLaterItem.category)
     var items: [ForLaterItem]? = []
 
-    init(name: String, isBuiltIn: Bool = false, sortOrder: Int = 0) {
+    init(name: String, isBuiltIn: Bool = false, builtInKey: String = "", sortOrder: Int = 0) {
         self.name = name
         self.isBuiltIn = isBuiltIn
+        self.builtInKey = builtInKey
         self.sortOrder = sortOrder
     }
 
     static let builtInNames = ["Events", "Content", "Other"]
+
+    /// Other is the catch-all: it can't be renamed or deleted.
+    var isOther: Bool { builtInKey == "other" }
+    /// Events items get the due date option.
+    var isEvents: Bool { builtInKey == "events" }
 }
 
 /// One of the user's daily "look at your For Laters" times (1 to 12 of them).
