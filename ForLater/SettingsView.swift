@@ -13,6 +13,9 @@ struct SettingsView: View {
 
     @Query(sort: \ForLaterCategory.sortOrder) private var categories: [ForLaterCategory]
 
+    @Query(filter: #Predicate<ForLaterItem> { $0.completedAt != nil })
+    private var archivedItems: [ForLaterItem]
+
     private let maxTimes = 12
 
     var body: some View {
@@ -20,6 +23,25 @@ struct SettingsView: View {
             Form {
                 if let settings {
                     HometownSection(settings: settings)
+                }
+
+                Section {
+                    NavigationLink {
+                        ArchiveView()
+                    } label: {
+                        LabeledContent {
+                            Text("\(archivedItems.count)")
+                        } label: {
+                            Label("Archive", systemImage: "archivebox")
+                        }
+                    }
+                    if let settings {
+                        ScreenshotRetentionPicker(settings: settings)
+                    }
+                } header: {
+                    Text("Archive")
+                } footer: {
+                    Text("Items you mark Done go to the archive, where you can revive them. Screenshots of archived items are deleted after the time you choose; the item itself stays.")
                 }
 
                 Section {
@@ -124,6 +146,22 @@ private struct HometownSection: View {
             Text("Hometown")
         } footer: {
             Text("The AI uses this to pick the event date and place nearest you, like the closest stop on a tour.")
+        }
+    }
+}
+
+private struct ScreenshotRetentionPicker: View {
+    @Environment(\.modelContext) private var context
+    @Bindable var settings: AppSettings
+
+    var body: some View {
+        Picker("Delete screenshots", selection: $settings.screenshotRetentionRaw) {
+            ForEach(ScreenshotRetention.allCases) { option in
+                Text(option.label).tag(option.rawValue)
+            }
+        }
+        .onChange(of: settings.screenshotRetentionRaw) { _, _ in
+            Archive.applyScreenshotRetention(in: context)
         }
     }
 }

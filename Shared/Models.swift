@@ -25,6 +25,9 @@ final class ForLaterItem {
     /// Optional due date for events. When `dueHasTime` is false only the day matters.
     var dueDate: Date?
     var dueHasTime: Bool = false
+    /// Brought back from the archive. Revived items are shown in purple.
+    var isRevived: Bool = false
+    var revivedAt: Date?
 
     init(title: String = "", screenshot: Data? = nil, link: String = "") {
         self.title = title
@@ -34,6 +37,7 @@ final class ForLaterItem {
         self.remindAt = Date()
     }
 
+    /// Done items live in the archive.
     var isCompleted: Bool { completedAt != nil }
 
     /// The moment the item becomes overdue: the due time, or the end of the due day.
@@ -141,8 +145,45 @@ final class CheckInTime {
 final class AppSettings {
     /// The user's home city, so the AI can pick the nearest event date and place.
     var hometown: String = ""
+    /// How long archived items keep their screenshot. See `ScreenshotRetention`.
+    var screenshotRetentionRaw: String = ScreenshotRetention.thirtyDays.rawValue
 
     init(hometown: String = "") {
         self.hometown = hometown
+    }
+
+    var screenshotRetention: ScreenshotRetention {
+        get { ScreenshotRetention(rawValue: screenshotRetentionRaw) ?? .thirtyDays }
+        set { screenshotRetentionRaw = newValue.rawValue }
+    }
+}
+
+/// How long a screenshot is kept after its item is archived.
+enum ScreenshotRetention: String, CaseIterable, Identifiable {
+    case immediately, oneHour, oneDay, thirtyDays, oneYear, forever
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .immediately: "Delete right away"
+        case .oneHour: "After 1 hour"
+        case .oneDay: "After 1 day"
+        case .thirtyDays: "After 30 days"
+        case .oneYear: "After 1 year"
+        case .forever: "Keep forever"
+        }
+    }
+
+    /// nil means keep forever.
+    var interval: TimeInterval? {
+        switch self {
+        case .immediately: 0
+        case .oneHour: 3_600
+        case .oneDay: 86_400
+        case .thirtyDays: 30 * 86_400
+        case .oneYear: 365 * 86_400
+        case .forever: nil
+        }
     }
 }
