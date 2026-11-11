@@ -58,12 +58,23 @@ struct DeskView: View {
 
     @Query(sort: \ForLaterCategory.sortOrder) private var categories: [ForLaterCategory]
 
+    @Query private var checkInTimes: [CheckInTime]
+
     @AppStorage("deskSort") private var sort: DeskSort = .mostRecent
     @AppStorage("deskLayout") private var layout: DeskLayout = .cards
     /// nil means the "All" tab.
     @State private var selectedCategory: ForLaterCategory?
     @State private var sheet: DeskSheet?
     @State private var showingSettings = false
+    @State private var showingConfetti = false
+    /// Set while a just-made item is being thrown away, so that doesn't count as clearing the desk.
+    @State private var discardingNew = false
+
+    /// Changes whenever something that affects notifications changes.
+    private var scheduleSignature: [String] {
+        openItems.map { "\($0.persistentModelID.hashValue):\($0.remindAt.timeIntervalSince1970):\($0.title)" }
+            + checkInTimes.map { "\($0.hour):\($0.minute)" }
+    }
 
     private var visibleItems: [ForLaterItem] {
         let filtered = selectedCategory.map { category in
@@ -159,16 +170,37 @@ struct DeskView: View {
                 SettingsView()
             }
         }
+        .overlay {
+            if showingConfetti {
+                ConfettiView()
+            }
+        }
         .task {
             DataStore.seedIfNeeded(context)
             Archive.applyScreenshotRetention(in: context)
             await ScreenshotAnalyzer.processPending(in: context)
+            await NotificationScheduler.reschedule(in: context)
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 Archive.applyScreenshotRetention(in: context)
-                Task { await ScreenshotAnalyzer.processPending(in: context) }
+                Task {
+                    await ScreenshotAnalyzer.processPending(in: context)
+                    await NotificationScheduler.reschedule(in: context)
+                }
+            } else if phase == .background {
+                Task { await NotificationScheduler.reschedule(in: context) }
             }
+        }
+        .onChange(of: scheduleSignature) { _, _ in
+            Task { await NotificationScheduler.reschedule(in: context) }
+        }
+        .onChange(of: openItems.count) { oldCount, newCount in
+            // The desk was just cleared: confetti.
+            if oldCount > 0, newCount == 0, !discardingNew {
+                celebrate()
+            }
+            discardingNew = false
         }
         .onChange(of: categories) { _, newCategories in
             // If the selected category was deleted in Settings, go back to All.
@@ -186,7 +218,16 @@ struct DeskView: View {
         sheet = .new(item)
     }
 
+    private func celebrate() {
+        showingConfetti = true
+        Task {
+            try? await Task.sleep(for: .seconds(4))
+            showingConfetti = false
+        }
+    }
+
     private func discardNew(_ item: ForLaterItem) {
+        discardingNew = true
         sheet = nil
         context.delete(item)
         try? context.save()

@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import UserNotifications
 
 /// Settings, opened from the gear on the desk: hometown, check-in times, categories.
 struct SettingsView: View {
@@ -21,6 +22,14 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    NotificationStatusRow()
+                } header: {
+                    Text("Notifications")
+                } footer: {
+                    Text("You're only notified at a check-in time when something on your desk is waiting.")
+                }
+
                 if let settings {
                     HometownSection(settings: settings)
                 }
@@ -148,5 +157,41 @@ private struct ScreenshotRetentionPicker: View {
         .onChange(of: settings.screenshotRetentionRaw) { _, _ in
             Archive.applyScreenshotRetention(in: context)
         }
+    }
+}
+
+private struct NotificationStatusRow: View {
+    @Environment(\.openURL) private var openURL
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var status: UNAuthorizationStatus?
+
+    var body: some View {
+        Group {
+            switch status {
+            case .authorized, .provisional, .ephemeral:
+                Label("Notifications are on", systemImage: "bell.fill")
+            case .denied:
+                Button("Turn on in the Settings app", systemImage: "bell.slash") {
+                    if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+                }
+            case .notDetermined:
+                Button("Turn on notifications", systemImage: "bell") {
+                    Task {
+                        _ = await NotificationScheduler.requestPermission()
+                        await refresh()
+                    }
+                }
+            default:
+                ProgressView()
+            }
+        }
+        .task { await refresh() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { Task { await refresh() } }
+        }
+    }
+
+    private func refresh() async {
+        status = await NotificationScheduler.authorizationStatus()
     }
 }

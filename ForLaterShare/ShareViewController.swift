@@ -84,7 +84,10 @@ final class ShareViewController: UIViewController {
     @MainActor
     private func finish() {
         try? container.mainContext.save()
-        extensionContext?.completeRequest(returningItems: nil)
+        Task { @MainActor in
+            await NotificationScheduler.reschedule(in: container.mainContext)
+            extensionContext?.completeRequest(returningItems: nil)
+        }
     }
 
     @MainActor
