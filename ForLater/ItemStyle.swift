@@ -35,3 +35,42 @@ struct ItemBadges: View {
         .font(.caption.weight(.semibold))
     }
 }
+
+// MARK: - Overdue shake
+
+/// A quick side-to-side shake. One unit of `animatableData` is one full shake.
+private struct ShakeEffect: GeometryEffect {
+    var travel: CGFloat = 7
+    var wiggles: CGFloat = 4
+    var animatableData: CGFloat
+
+    func effectValue(size: CGSize) -> ProjectionTransform {
+        ProjectionTransform(CGAffineTransform(translationX: travel * sin(animatableData * .pi * wiggles), y: 0))
+    }
+}
+
+/// Shakes the view now and every 15 seconds while it's overdue.
+/// Skipped when the user has Reduce Motion turned on.
+private struct OverdueShake: ViewModifier {
+    let isOverdue: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var shakes: CGFloat = 0
+
+    func body(content: Content) -> some View {
+        content
+            .modifier(ShakeEffect(animatableData: shakes))
+            .task(id: isOverdue) {
+                guard isOverdue, !reduceMotion else { return }
+                while !Task.isCancelled {
+                    withAnimation(.linear(duration: 0.5)) { shakes += 1 }
+                    try? await Task.sleep(for: .seconds(15))
+                }
+            }
+    }
+}
+
+extension View {
+    func overdueShake(_ isOverdue: Bool) -> some View {
+        modifier(OverdueShake(isOverdue: isOverdue))
+    }
+}

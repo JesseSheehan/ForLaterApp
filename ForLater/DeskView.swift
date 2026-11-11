@@ -448,6 +448,7 @@ private struct DeskCard: View {
         .overlay(shape.strokeBorder(highlight ?? Color.clear, lineWidth: 2))
         .contentShape(shape)
         .onTapGesture(perform: onOpen)
+        .overdueShake(item.isOverdue(at: now))
     }
 }
 
@@ -525,5 +526,6 @@ private struct DeskRow: View {
             }
         }
         .padding(.vertical, 2)
+        .overdueShake(item.isOverdue(at: now))
     }
 }
