@@ -82,3 +82,14 @@ final class CheckInTime {
         return Calendar.current.nextDate(after: date, matching: components, matchingPolicy: .nextTime) ?? date
     }
 }
+
+/// App-wide preferences that sync across the user's devices.
+@Model
+final class AppSettings {
+    /// The user's home city, so the AI can pick the nearest event date and place.
+    var hometown: String = ""
+
+    init(hometown: String = "") {
+        self.hometown = hometown
+    }
+}

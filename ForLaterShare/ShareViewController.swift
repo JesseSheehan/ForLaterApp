@@ -44,7 +44,8 @@ final class ShareViewController: UIViewController {
         let result = await ScreenshotAnalyzer.analyze(
             imageData: newItem.screenshot,
             sharedLink: url?.absoluteString,
-            categoryNames: categories.map(\.name)
+            categoryNames: categories.map(\.name),
+            hometown: DataStore.settings(in: context).hometown
         )
         ScreenshotAnalyzer.apply(result, to: newItem, categories: categories)
         try? context.save()

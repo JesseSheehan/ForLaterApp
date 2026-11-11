@@ -41,7 +41,7 @@ enum ScreenshotAnalyzer {
     /// links, then Apple's on-device model looks at the image itself (iOS 27+)
     /// together with that text, writes a title, picks a category and adds notes.
     /// Without Apple Intelligence it still returns the text and link.
-    static func analyze(imageData: Data?, sharedLink: String?, categoryNames: [String]) async -> AnalysisResult {
+    static func analyze(imageData: Data?, sharedLink: String?, categoryNames: [String], hometown: String? = nil) async -> AnalysisResult {
         var result = AnalysisResult()
 
         let findings: VisionFindings
@@ -57,7 +57,7 @@ enum ScreenshotAnalyzer {
             result.link = firstLink(in: findings.text)?.absoluteString
         }
 
-        if let summary = await summarize(findings: findings, imageData: imageData, link: result.link, categoryNames: categoryNames) {
+        if let summary = await summarize(findings: findings, imageData: imageData, link: result.link, categoryNames: categoryNames, hometown: hometown) {
             result.title = summary.title
             result.categoryName = matchCategory(summary.category, in: categoryNames)
             result.notes = summary.notes
@@ -75,13 +75,14 @@ enum ScreenshotAnalyzer {
         return result
     }
 
-    /// Fills only the fields the user hasn't typed into yet.
+    /// Fills in the card. Normally only fields the user hasn't typed into yet;
+    /// with `overwrite` (the "Use AI to input details" button) it replaces them.
     @MainActor
-    static func apply(_ result: AnalysisResult, to item: ForLaterItem, categories: [ForLaterCategory]) {
-        if item.title.isEmpty { item.title = result.title }
+    static func apply(_ result: AnalysisResult, to item: ForLaterItem, categories: [ForLaterCategory], overwrite: Bool = false) {
+        if overwrite || item.title.isEmpty, !result.title.isEmpty { item.title = result.title }
         if item.link.isEmpty, let link = result.link { item.link = link }
-        if item.notes.isEmpty { item.notes = result.notes }
-        if item.category == nil || item.category?.name == "Other",
+        if overwrite || item.notes.isEmpty, !result.notes.isEmpty { item.notes = result.notes }
+        if overwrite || item.category == nil || item.category?.name == "Other",
            let name = result.categoryName,
            let match = categories.first(where: { $0.name == name }) {
             item.category = match
@@ -96,8 +97,9 @@ enum ScreenshotAnalyzer {
         guard let pending = try? context.fetch(descriptor), !pending.isEmpty else { return }
         let categories = (try? context.fetch(FetchDescriptor<ForLaterCategory>(sortBy: [SortDescriptor(\.sortOrder)]))) ?? []
         let names = categories.map(\.name)
+        let hometown = DataStore.settings(in: context).hometown
         for item in pending {
-            let result = await analyze(imageData: item.screenshot, sharedLink: item.link, categoryNames: names)
+            let result = await analyze(imageData: item.screenshot, sharedLink: item.link, categoryNames: names, hometown: hometown)
             apply(result, to: item, categories: categories)
         }
         try? context.save()
@@ -119,10 +121,10 @@ enum ScreenshotAnalyzer {
     else fits. If there are several dates or places, pick the one closest to the person's location.
     """
 
-    private static func summarize(findings: VisionFindings, imageData: Data?, link: String?, categoryNames: [String]) async -> ScreenshotSummary? {
+    private static func summarize(findings: VisionFindings, imageData: Data?, link: String?, categoryNames: [String], hometown: String?) async -> ScreenshotSummary? {
         guard isLanguageModelAvailable else { return nil }
 
-        let prompt = makePrompt(findings: findings, link: link, categoryNames: categoryNames)
+        let prompt = makePrompt(findings: findings, link: link, categoryNames: categoryNames, hometown: hometown)
 
         // iOS 27+: let the model look at the image itself, not just its text.
         if #available(iOS 27.0, *), let imageData, let cgImage = modelImage(from: imageData) {
@@ -150,13 +152,17 @@ enum ScreenshotAnalyzer {
         }
     }
 
-    private static func makePrompt(findings: VisionFindings, link: String?, categoryNames: [String]) -> String {
+    private static func makePrompt(findings: VisionFindings, link: String?, categoryNames: [String], hometown: String?) -> String {
         let now = Date()
         let region = Locale.current.region?.identifier ?? "unknown"
+        let town = hometown?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let location = town.isEmpty
+            ? "The person's time zone is \(TimeZone.current.identifier) (country/region: \(region)). Use this as their location."
+            : "The person lives in \(town) (time zone \(TimeZone.current.identifier)). Use this as their location."
         // The on-device model has a small context window, so keep the text short.
         return """
         Today is \(now.formatted(date: .complete, time: .omitted)).
-        The person's time zone is \(TimeZone.current.identifier) (country/region: \(region)). Use this as their location.
+        \(location)
         Categories: \(categoryNames.joined(separator: ", "))
         Link: \(link ?? "none")
         Things recognized in the image: \(findings.labels.isEmpty ? "none" : findings.labels.joined(separator: ", "))

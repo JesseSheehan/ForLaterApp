@@ -7,7 +7,7 @@ enum AppIdentifiers {
 }
 
 enum DataStore {
-    static let schema = Schema([ForLaterItem.self, ForLaterCategory.self, CheckInTime.self])
+    static let schema = Schema([ForLaterItem.self, ForLaterCategory.self, CheckInTime.self, AppSettings.self])
 
     /// One store in the shared App Group folder, used by both the app and the
     /// share extension, and synced to the user's private iCloud database.
@@ -47,5 +47,17 @@ enum DataStore {
             context.insert(CheckInTime(hour: 18, minute: 0))
         }
         try? context.save()
+    }
+
+    /// The user's settings, created the first time they're needed.
+    @MainActor
+    static func settings(in context: ModelContext) -> AppSettings {
+        if let existing = try? context.fetch(FetchDescriptor<AppSettings>()).first {
+            return existing
+        }
+        let settings = AppSettings()
+        context.insert(settings)
+        try? context.save()
+        return settings
     }
 }

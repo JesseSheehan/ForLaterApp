@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import PhotosUI
 
 /// The For Later card: shown from the share sheet for a new item, and from the
 /// desk when editing one. Only category and reminder time are required.
@@ -7,6 +8,8 @@ struct ForLaterCardView: View {
     @Environment(\.modelContext) private var context
     @Bindable var item: ForLaterItem
     var isAnalyzing: Bool = false
+    /// In the app (not the share sheet): pick a photo and run the AI on demand.
+    var allowsPhotoPicking: Bool = false
     var onCancel: (() -> Void)?
     var onDone: () -> Void
 
@@ -18,24 +21,39 @@ struct ForLaterCardView: View {
     @State private var reminderChoice: Int = Self.unsetChoice
     @State private var showingNewCategory = false
     @State private var newCategoryName = ""
+    @State private var photoSelection: PhotosPickerItem?
+    @State private var isRunningAI = false
 
     private static let unsetChoice = -2
     private static let customChoice = -1
 
     var body: some View {
         Form {
-            if let data = item.screenshot, let image = UIImage(data: data) {
+            if allowsPhotoPicking {
                 Section {
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(maxHeight: 220)
-                        .frame(maxWidth: .infinity)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    if let image = screenshotImage {
+                        imageView(image)
+                        Button {
+                            Task { await runAI() }
+                        } label: {
+                            Label("Use AI to input details", systemImage: "sparkles")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(isRunningAI)
+                    }
+                    PhotosPicker(selection: $photoSelection, matching: .images) {
+                        Label(item.screenshot == nil ? "Add a photo from Photos" : "Choose a different photo",
+                              systemImage: "photo.on.rectangle")
+                    }
+                }
+            } else if let image = screenshotImage {
+                Section {
+                    imageView(image)
                 }
             }
 
-            if isAnalyzing {
+            if isAnalyzing || isRunningAI {
                 Section {
                     HStack(spacing: 12) {
                         ProgressView()
@@ -110,6 +128,14 @@ struct ForLaterCardView: View {
             }
         }
         .onAppear(perform: setUpReminderChoice)
+        .onChange(of: photoSelection) { _, selection in
+            guard let selection else { return }
+            Task {
+                if let data = try? await selection.loadTransferable(type: Data.self) {
+                    item.screenshot = ScreenshotAnalyzer.preparedImageData(from: data)
+                }
+            }
+        }
         .onChange(of: checkInTimes.count) { _, _ in setUpReminderChoice() }
         .onChange(of: reminderChoice) { _, newValue in
             if newValue >= 0 {
@@ -127,6 +153,31 @@ struct ForLaterCardView: View {
             Button("Cancel", role: .cancel) { newCategoryName = "" }
             Button("Add") { addCategory() }
         }
+    }
+
+    private var screenshotImage: UIImage? {
+        item.screenshot.flatMap { UIImage(data: $0) }
+    }
+
+    private func imageView(_ image: UIImage) -> some View {
+        Image(uiImage: image)
+            .resizable()
+            .scaledToFit()
+            .frame(maxHeight: 220)
+            .frame(maxWidth: .infinity)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func runAI() async {
+        isRunningAI = true
+        defer { isRunningAI = false }
+        let result = await ScreenshotAnalyzer.analyze(
+            imageData: item.screenshot,
+            sharedLink: item.link.isEmpty ? nil : item.link,
+            categoryNames: categories.map(\.name),
+            hometown: DataStore.settings(in: context).hometown
+        )
+        ScreenshotAnalyzer.apply(result, to: item, categories: categories, overwrite: true)
     }
 
     private func setUpReminderChoice() {
