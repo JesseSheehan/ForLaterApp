@@ -25,7 +25,7 @@ final class ShareViewController: UIViewController {
 
     @MainActor
     private func start() async {
-        let (imageData, url) = await loadAttachments()
+        let (imageData, url, text) = await loadAttachments()
         let context = container.mainContext
         DataStore.seedIfNeeded(context)
 
@@ -34,16 +34,25 @@ final class ShareViewController: UIViewController {
             link: url?.absoluteString ?? ""
         )
         newItem.needsAnalysis = true
+        newItem.sharedText = text ?? ""
         context.insert(newItem)
         try? context.save()
         item = newItem
 
         showCard(for: newItem)
 
+        // A link with no picture (like an Instagram post): fetch its preview
+        // (author, caption, image) while the card is already showing.
+        if newItem.screenshot == nil {
+            await ScreenshotAnalyzer.enrichFromLink(newItem)
+            try? context.save()
+        }
+
         let categories = (try? context.fetch(FetchDescriptor<ForLaterCategory>(sortBy: [SortDescriptor(\.sortOrder)]))) ?? []
         let result = await ScreenshotAnalyzer.analyze(
             imageData: newItem.screenshot,
             sharedLink: url?.absoluteString,
+            sharedText: newItem.sharedText,
             categoryNames: categories.map(\.name),
             hometown: DataStore.settings(in: context).hometown
         )
@@ -89,19 +98,45 @@ final class ShareViewController: UIViewController {
 
     // MARK: - Reading what was shared
 
-    private func loadAttachments() async -> (Data?, URL?) {
+    private func loadAttachments() async -> (Data?, URL?, String?) {
         let inputItems = (extensionContext?.inputItems as? [NSExtensionItem]) ?? []
         let providers = inputItems.flatMap { $0.attachments ?? [] }
         var imageData: Data?
         var url: URL?
+        var texts: [String] = []
         for provider in providers {
             if imageData == nil, provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
                 imageData = await loadImage(from: provider)
             } else if url == nil, provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
                 url = await loadURL(from: provider)
+            } else if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier),
+                      let text = await loadText(from: provider) {
+                texts.append(text)
             }
         }
-        return (imageData, url)
+        // Some apps also put a caption or title on the shared item itself.
+        for inputItem in inputItems {
+            if let content = inputItem.attributedContentText?.string, !content.isEmpty { texts.append(content) }
+            if let title = inputItem.attributedTitle?.string, !title.isEmpty { texts.append(title) }
+        }
+        // Drop text that is just the link again.
+        let cleaned = texts
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0 != url?.absoluteString }
+        let text = cleaned.isEmpty ? nil : Array(NSOrderedSet(array: cleaned)).compactMap { $0 as? String }.joined(separator: "\n")
+        // Text that is only a link counts as the link.
+        if url == nil, let only = text, let detected = ScreenshotAnalyzer.firstLink(in: only), detected.absoluteString == only {
+            return (imageData, detected, nil)
+        }
+        return (imageData, url, text)
+    }
+
+    private func loadText(from provider: NSItemProvider) async -> String? {
+        await withCheckedContinuation { continuation in
+            provider.loadItem(forTypeIdentifier: UTType.plainText.identifier, options: nil) { item, _ in
+                continuation.resume(returning: item as? String)
+            }
+        }
     }
 
     private func loadImage(from provider: NSItemProvider) async -> Data? {

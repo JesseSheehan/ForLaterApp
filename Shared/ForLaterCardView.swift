@@ -81,10 +81,19 @@ struct ForLaterCardView: View {
                 Section {
                     Toggle("Due date", isOn: dueDateEnabled)
                     if item.dueDate != nil {
-                        DatePicker("Date", selection: dueDayBinding, displayedComponents: .date)
-                        Toggle("Include a time", isOn: dueTimeEnabled)
-                        if item.dueHasTime {
-                            DatePicker("Time", selection: dueTimeBinding, displayedComponents: .hourAndMinute)
+                        Picker("Due in", selection: dueOptionBinding) {
+                            ForEach(DueOption.allCases) { option in
+                                Text(option.label).tag(option)
+                            }
+                        }
+                        if item.dueOption == .custom {
+                            DatePicker("Date", selection: dueDayBinding, displayedComponents: .date)
+                            Toggle("Include a time", isOn: dueTimeEnabled)
+                            if item.dueHasTime {
+                                DatePicker("Time", selection: dueTimeBinding, displayedComponents: .hourAndMinute)
+                            }
+                        } else if let label = item.dueLabel {
+                            LabeledContent("Due", value: label)
                         }
                     }
                 } header: {
@@ -184,11 +193,9 @@ struct ForLaterCardView: View {
             get: { item.dueDate != nil },
             set: { isOn in
                 if isOn {
-                    item.dueDate = Calendar.current.startOfDay(for: Date())
-                    item.dueHasTime = false
+                    item.applyDueOption(DueOption.defaultOption)
                 } else {
-                    item.dueDate = nil
-                    item.dueHasTime = false
+                    item.clearDueDate()
                 }
             }
         )
@@ -207,6 +214,13 @@ struct ForLaterCardView: View {
                     item.clearDueTime()
                 }
             }
+        )
+    }
+
+    private var dueOptionBinding: Binding<DueOption> {
+        Binding(
+            get: { item.dueOption },
+            set: { item.applyDueOption($0) }
         )
     }
 
@@ -243,9 +257,11 @@ struct ForLaterCardView: View {
     private func runAI() async {
         isRunningAI = true
         defer { isRunningAI = false }
+        await ScreenshotAnalyzer.enrichFromLink(item)
         let result = await ScreenshotAnalyzer.analyze(
             imageData: item.screenshot,
             sharedLink: item.link.isEmpty ? nil : item.link,
+            sharedText: item.sharedText,
             categoryNames: categories.map(\.name),
             hometown: DataStore.settings(in: context).hometown
         )

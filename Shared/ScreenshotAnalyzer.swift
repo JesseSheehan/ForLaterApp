@@ -50,7 +50,7 @@ enum ScreenshotAnalyzer {
     /// links, then Apple's on-device model looks at the image itself (iOS 27+)
     /// together with that text, writes a title, picks a category and adds notes.
     /// Without Apple Intelligence it still returns the text and link.
-    static func analyze(imageData: Data?, sharedLink: String?, categoryNames: [String], hometown: String? = nil) async -> AnalysisResult {
+    static func analyze(imageData: Data?, sharedLink: String?, sharedText: String? = nil, categoryNames: [String], hometown: String? = nil) async -> AnalysisResult {
         var result = AnalysisResult()
 
         let findings: VisionFindings
@@ -66,7 +66,7 @@ enum ScreenshotAnalyzer {
             result.link = firstLink(in: findings.text)?.absoluteString
         }
 
-        if let summary = await summarize(findings: findings, imageData: imageData, link: result.link, categoryNames: categoryNames, hometown: hometown) {
+        if let summary = await summarize(findings: findings, imageData: imageData, link: result.link, sharedText: sharedText, categoryNames: categoryNames, hometown: hometown) {
             result.title = summary.title
             result.categoryName = matchCategory(summary.category, in: categoryNames)
             result.notes = summary.notes
@@ -76,8 +76,9 @@ enum ScreenshotAnalyzer {
             }
             result.usedLanguageModel = true
         } else {
-            // Fallback: first line of text (or what Vision saw) as the title, category Other.
-            let firstLine = findings.text
+            // Fallback: first line of shared or screenshot text (or what Vision saw)
+            // as the title, category Other.
+            let firstLine = ((sharedText ?? "") + "\n" + findings.text)
                 .split(separator: "\n")
                 .map { $0.trimmingCharacters(in: .whitespaces) }
                 .first(where: { $0.count > 3 })
@@ -103,8 +104,26 @@ enum ScreenshotAnalyzer {
         if item.dueDate == nil, item.category?.name == "Events", let due = result.dueDate {
             item.dueDate = due
             item.dueHasTime = result.dueHasTime
+            item.dueOptionRaw = DueOption.custom.rawValue
         }
         item.needsAnalysis = false
+    }
+
+    /// For a shared link with no picture (an Instagram post, for example), fetches
+    /// the link's public preview: its image becomes the item's picture and its
+    /// title and caption are saved for the AI.
+    @MainActor
+    static func enrichFromLink(_ item: ForLaterItem) async {
+        guard item.screenshot == nil, !item.link.isEmpty, let url = URL(string: item.link) else { return }
+        let preview = await LinkPreview.fetch(for: url)
+        if let imageData = preview.imageData {
+            item.screenshot = preparedImageData(from: imageData)
+        }
+        // Keep any text the sharing app sent, and add the preview's.
+        let previewText = preview.text
+        if !previewText.isEmpty, !item.sharedText.contains(previewText) {
+            item.sharedText = item.sharedText.isEmpty ? previewText : item.sharedText + "\n" + previewText
+        }
     }
 
     /// Turns the model's "yyyy-MM-dd" and "HH:mm" strings into a date.
@@ -135,7 +154,9 @@ enum ScreenshotAnalyzer {
         let names = categories.map(\.name)
         let hometown = DataStore.settings(in: context).hometown
         for item in pending {
-            let result = await analyze(imageData: item.screenshot, sharedLink: item.link, categoryNames: names, hometown: hometown)
+            await enrichFromLink(item)
+            let result = await analyze(imageData: item.screenshot, sharedLink: item.link, sharedText: item.sharedText,
+                                       categoryNames: names, hometown: hometown)
             apply(result, to: item, categories: categories)
         }
         try? context.save()
@@ -148,7 +169,7 @@ enum ScreenshotAnalyzer {
     }
 
     private static let instructions = """
-    You help someone save things from screenshots so they can come back to them later. \
+    You help someone save things from screenshots and shared links so they can come back to them later. \
     You get the screenshot and the text read from it. Work out what the person most likely \
     wants to come back to, and describe it specifically, with names. If the screenshot is a \
     photo with little or no text, say what it shows. Choose the single best category from the \
@@ -157,10 +178,10 @@ enum ScreenshotAnalyzer {
     else fits. If there are several dates or places, pick the one closest to the person's location.
     """
 
-    private static func summarize(findings: VisionFindings, imageData: Data?, link: String?, categoryNames: [String], hometown: String?) async -> ScreenshotSummary? {
+    private static func summarize(findings: VisionFindings, imageData: Data?, link: String?, sharedText: String?, categoryNames: [String], hometown: String?) async -> ScreenshotSummary? {
         guard isLanguageModelAvailable else { return nil }
 
-        let prompt = makePrompt(findings: findings, link: link, categoryNames: categoryNames, hometown: hometown)
+        let prompt = makePrompt(findings: findings, link: link, sharedText: sharedText, categoryNames: categoryNames, hometown: hometown)
 
         // iOS 27+: let the model look at the image itself, not just its text.
         if #available(iOS 27.0, *), let imageData, let cgImage = modelImage(from: imageData) {
@@ -177,7 +198,7 @@ enum ScreenshotAnalyzer {
         }
 
         // Text only (iOS 26, or if the image prompt failed).
-        guard !(findings.text.isEmpty && findings.labels.isEmpty && (link ?? "").isEmpty) else { return nil }
+        guard !(findings.text.isEmpty && findings.labels.isEmpty && (link ?? "").isEmpty && (sharedText ?? "").isEmpty) else { return nil }
         do {
             let session = LanguageModelSession(instructions: instructions)
             let response = try await session.respond(to: prompt, generating: ScreenshotSummary.self)
@@ -188,7 +209,7 @@ enum ScreenshotAnalyzer {
         }
     }
 
-    private static func makePrompt(findings: VisionFindings, link: String?, categoryNames: [String], hometown: String?) -> String {
+    private static func makePrompt(findings: VisionFindings, link: String?, sharedText: String?, categoryNames: [String], hometown: String?) -> String {
         let now = Date()
         let region = Locale.current.region?.identifier ?? "unknown"
         let town = hometown?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -201,6 +222,7 @@ enum ScreenshotAnalyzer {
         \(location)
         Categories: \(categoryNames.joined(separator: ", "))
         Link: \(link ?? "none")
+        Shared with the link (title, author, caption): \((sharedText ?? "").isEmpty ? "none" : String((sharedText ?? "").prefix(800)))
         Things recognized in the image: \(findings.labels.isEmpty ? "none" : findings.labels.joined(separator: ", "))
         Text from the screenshot:
         \(findings.text.isEmpty ? "(no text)" : String(findings.text.prefix(2000)))

@@ -25,6 +25,10 @@ final class ForLaterItem {
     /// Optional due date for events. When `dueHasTime` is false only the day matters.
     var dueDate: Date?
     var dueHasTime: Bool = false
+    /// Which due date option was picked (see `DueOption`). Empty means custom.
+    var dueOptionRaw: String = ""
+    /// Extra text that came with a shared link, like an Instagram post's author and caption.
+    var sharedText: String = ""
     /// Brought back from the archive. Revived items are shown in purple.
     var isRevived: Bool = false
     var revivedAt: Date?
@@ -83,6 +87,27 @@ final class ForLaterItem {
         } else {
             dueDate = start
         }
+    }
+
+    var dueOption: DueOption { DueOption(rawValue: dueOptionRaw) ?? .custom }
+
+    /// Sets the due date from a preset like "24 hours" (counted from now).
+    /// Custom keeps the current date so it can be edited by hand.
+    func applyDueOption(_ option: DueOption, now: Date = Date()) {
+        dueOptionRaw = option.rawValue
+        if let date = option.dueDate(from: now) {
+            dueDate = date
+            dueHasTime = true
+        } else if dueDate == nil {
+            dueDate = Calendar.current.startOfDay(for: now)
+            dueHasTime = false
+        }
+    }
+
+    func clearDueDate() {
+        dueDate = nil
+        dueHasTime = false
+        dueOptionRaw = ""
     }
 
     func clearDueTime() {
@@ -184,6 +209,47 @@ enum ScreenshotRetention: String, CaseIterable, Identifiable {
         case .thirtyDays: 30 * 86_400
         case .oneYear: 365 * 86_400
         case .forever: nil
+        }
+    }
+}
+
+/// Due date choices on the card. Presets count from the moment you pick them.
+enum DueOption: String, CaseIterable, Identifiable {
+    case oneHour, twentyFourHours, oneWeek, twoWeeks, oneMonth, twoMonths, threeMonths, sixMonths, oneYear, custom
+
+    static let defaultOption: DueOption = .twentyFourHours
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .oneHour: "1 hour"
+        case .twentyFourHours: "24 hours"
+        case .oneWeek: "1 week"
+        case .twoWeeks: "2 weeks"
+        case .oneMonth: "1 month"
+        case .twoMonths: "2 months"
+        case .threeMonths: "3 months"
+        case .sixMonths: "6 months"
+        case .oneYear: "1 year"
+        case .custom: "Custom"
+        }
+    }
+
+    /// nil for custom.
+    func dueDate(from now: Date) -> Date? {
+        let calendar = Calendar.current
+        switch self {
+        case .oneHour: return calendar.date(byAdding: .hour, value: 1, to: now)
+        case .twentyFourHours: return calendar.date(byAdding: .day, value: 1, to: now)
+        case .oneWeek: return calendar.date(byAdding: .day, value: 7, to: now)
+        case .twoWeeks: return calendar.date(byAdding: .day, value: 14, to: now)
+        case .oneMonth: return calendar.date(byAdding: .month, value: 1, to: now)
+        case .twoMonths: return calendar.date(byAdding: .month, value: 2, to: now)
+        case .threeMonths: return calendar.date(byAdding: .month, value: 3, to: now)
+        case .sixMonths: return calendar.date(byAdding: .month, value: 6, to: now)
+        case .oneYear: return calendar.date(byAdding: .year, value: 1, to: now)
+        case .custom: return nil
         }
     }
 }
