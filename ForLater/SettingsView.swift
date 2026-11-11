@@ -23,15 +23,25 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section {
+                    NavigationLink {
+                        PrivacyView()
+                    } label: {
+                        LabeledContent {
+                            Text(settings?.aiMode.title ?? "")
+                        } label: {
+                            Label("Privacy", systemImage: "hand.raised")
+                        }
+                    }
+                } footer: {
+                    Text("Hometown, location and how much AI For Later uses.")
+                }
+
+                Section {
                     NotificationStatusRow()
                 } header: {
                     Text("Notifications")
                 } footer: {
                     Text("You're only notified at a check-in time when something on your desk is waiting.")
-                }
-
-                if let settings {
-                    HometownSection(settings: settings)
                 }
 
                 Section {
@@ -127,21 +137,6 @@ struct SettingsView: View {
         }
     }
 
-}
-
-private struct HometownSection: View {
-    @Bindable var settings: AppSettings
-
-    var body: some View {
-        Section {
-            TextField("City, like Austin, TX", text: $settings.hometown)
-                .textContentType(.addressCity)
-        } header: {
-            Text("Hometown")
-        } footer: {
-            Text("The AI uses this to pick the event date and place nearest you, like the closest stop on a tour.")
-        }
-    }
 }
 
 private struct ScreenshotRetentionPicker: View {

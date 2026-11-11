@@ -22,6 +22,7 @@ struct ForLaterCardView: View {
     @State private var showingNewCategory = false
     @State private var newCategoryName = ""
     @State private var photoSelection: PhotosPickerItem?
+    @State private var aiMode: AIMode = .onDevice
     @State private var isRunningAI = false
 
     private static let unsetChoice = -2
@@ -33,10 +34,13 @@ struct ForLaterCardView: View {
                 Section {
                     if let image = screenshotImage {
                         imageView(image)
+                    }
+                    if (screenshotImage != nil || !item.link.isEmpty), aiMode != .manual {
                         Button {
                             Task { await runAI() }
                         } label: {
-                            Label("Use AI to input details", systemImage: "sparkles")
+                            Label(aiMode == .visionOnly ? "Read details from image" : "Use AI to input details",
+                                  systemImage: aiMode == .visionOnly ? "text.viewfinder" : "sparkles")
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.borderedProminent)
@@ -160,7 +164,10 @@ struct ForLaterCardView: View {
                 .accessibilityLabel("Save For Later")
             }
         }
-        .onAppear(perform: setUpReminderChoice)
+        .onAppear {
+            setUpReminderChoice()
+            aiMode = DataStore.settings(in: context).aiMode
+        }
         .onChange(of: photoSelection) { _, selection in
             guard let selection else { return }
             Task {
@@ -265,8 +272,7 @@ struct ForLaterCardView: View {
             imageData: item.screenshot,
             sharedLink: item.link.isEmpty ? nil : item.link,
             sharedText: item.sharedText,
-            categoryNames: categories.map(\.name),
-            hometown: DataStore.settings(in: context).hometown
+            context: AnalysisContext(in: context, categories: categories)
         )
         ScreenshotAnalyzer.apply(result, to: item, categories: categories, overwrite: true)
     }

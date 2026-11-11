@@ -39,7 +39,19 @@ final class ShareViewController: UIViewController {
         try? context.save()
         item = newItem
 
+        let categories = (try? context.fetch(FetchDescriptor<ForLaterCategory>(sortBy: [SortDescriptor(\.sortOrder)]))) ?? []
+        let analysisContext = AnalysisContext(in: context, categories: categories)
+
+        // Manual mode: no reading at all, the user fills in the card.
+        if analysisContext.mode == .manual {
+            newItem.needsAnalysis = false
+            newItem.category = categories.first(where: { $0.isOther })
+            try? context.save()
+            state.isAnalyzing = false
+        }
+
         showCard(for: newItem)
+        guard analysisContext.mode != .manual else { return }
 
         // A link with no picture (like an Instagram post): fetch its preview
         // (author, caption, image) while the card is already showing.
@@ -48,13 +60,11 @@ final class ShareViewController: UIViewController {
             try? context.save()
         }
 
-        let categories = (try? context.fetch(FetchDescriptor<ForLaterCategory>(sortBy: [SortDescriptor(\.sortOrder)]))) ?? []
         let result = await ScreenshotAnalyzer.analyze(
             imageData: newItem.screenshot,
             sharedLink: url?.absoluteString,
             sharedText: newItem.sharedText,
-            categoryNames: categories.map(\.name),
-            hometown: DataStore.settings(in: context).hometown
+            context: analysisContext
         )
         ScreenshotAnalyzer.apply(result, to: newItem, categories: categories)
         try? context.save()

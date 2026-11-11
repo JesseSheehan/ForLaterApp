@@ -178,6 +178,7 @@ struct DeskView: View {
         .task {
             DataStore.seedIfNeeded(context)
             Archive.applyScreenshotRetention(in: context)
+            await LocationProvider.refreshIfEnabled(in: context)
             await ScreenshotAnalyzer.processPending(in: context)
             await NotificationScheduler.reschedule(in: context)
         }
@@ -185,6 +186,7 @@ struct DeskView: View {
             if phase == .active {
                 Archive.applyScreenshotRetention(in: context)
                 Task {
+                    await LocationProvider.refreshIfEnabled(in: context)
                     await ScreenshotAnalyzer.processPending(in: context)
                     await NotificationScheduler.reschedule(in: context)
                 }

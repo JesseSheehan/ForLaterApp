@@ -14,8 +14,32 @@ struct AnalysisResult {
     /// For events: when it happens, as found in the screenshot.
     var dueDate: Date?
     var dueHasTime = false
-    var usedLanguageModel = false
+    var engine: AnalysisEngine = .none
 }
+
+/// Everything the analyzer needs to know about the user's setup.
+struct AnalysisContext {
+    var categoryNames: [String] = []
+    /// The user's names for the starter Events and Content categories, if they still exist.
+    var eventsName: String?
+    var contentName: String?
+    /// Hometown or current city; empty if unknown.
+    var location: String = ""
+    var mode: AIMode = .onDevice
+    var alwaysRefines = true
+
+    @MainActor
+    init(in context: ModelContext, categories: [ForLaterCategory]) {
+        let settings = DataStore.settings(in: context)
+        categoryNames = categories.map(\.name)
+        eventsName = categories.first(where: { $0.isEvents })?.name
+        contentName = categories.first(where: { $0.isContent })?.name
+        location = settings.aiLocation
+        mode = settings.aiMode
+        alwaysRefines = settings.aiAlwaysRefines
+    }
+}
+
 
 /// The structured answer we ask Apple's on-device model for.
 @Generable
@@ -45,48 +69,119 @@ private struct VisionFindings {
 
 enum ScreenshotAnalyzer {
 
-    /// Reads a screenshot (and an optional shared link) and suggests card fields.
-    /// Steps: Vision reads the text and recognizes objects, a data detector finds
-    /// links, then Apple's on-device model looks at the image itself (iOS 27+)
-    /// together with that text, writes a title, picks a category and adds notes.
-    /// Without Apple Intelligence it still returns the text and link.
-    static func analyze(imageData: Data?, sharedLink: String?, sharedText: String? = nil, categoryNames: [String], hometown: String? = nil) async -> AnalysisResult {
-        var result = AnalysisResult()
+    /// Reads a screenshot (and an optional shared link) and suggests card fields,
+    /// using as much AI as the user allows. Each step builds on the one before:
+    /// 1. Vision/OCR: reads text, links and dates and recognizes objects in photos.
+    /// 2. On-device AI: writes a specific title, picks the category, adds notes.
+    /// 3. Private Cloud Compute (Full AI only): used when on-device AI isn't
+    ///    available or fails.
+    static func analyze(imageData: Data?, sharedLink: String?, sharedText: String? = nil, context: AnalysisContext) async -> AnalysisResult {
+        guard context.mode != .manual else { return AnalysisResult() }
 
+        // Step 1: Vision/OCR and data detectors.
         let findings: VisionFindings
         if let imageData {
             findings = await runVision(on: imageData)
         } else {
             findings = VisionFindings()
         }
+        var result = visionResult(findings: findings, sharedLink: sharedLink, sharedText: sharedText, context: context)
+        guard context.mode != .visionOnly else { return result }
+
+        let needsAI = context.alwaysRefines || !isComplete(result, findings: findings)
+        guard needsAI else { return result }
+
+        // Step 2: on-device AI.
+        if let summary = await summarize(using: .onDevice, findings: findings, imageData: imageData,
+                                         link: result.link, sharedText: sharedText, context: context) {
+            merge(summary, into: &result, categoryNames: context.categoryNames)
+            result.engine = .onDevice
+            return result
+        }
+
+        // Step 3: Private Cloud Compute, only with Full AI.
+        if context.mode == .full,
+           let summary = await summarize(using: .cloud, findings: findings, imageData: imageData,
+                                         link: result.link, sharedText: sharedText, context: context) {
+            merge(summary, into: &result, categoryNames: context.categoryNames)
+            result.engine = .cloud
+        }
+        return result
+    }
+
+    /// Step 1 on its own: put what Vision and the data detectors found into the right fields.
+    private static func visionResult(findings: VisionFindings, sharedLink: String?, sharedText: String?, context: AnalysisContext) -> AnalysisResult {
+        var result = AnalysisResult()
+        let allText = [sharedText ?? "", findings.text].filter { !$0.isEmpty }.joined(separator: "\n")
 
         if let sharedLink, !sharedLink.isEmpty {
             result.link = sharedLink
         } else {
-            result.link = firstLink(in: findings.text)?.absoluteString
+            result.link = firstLink(in: allText)?.absoluteString
         }
 
-        if let summary = await summarize(findings: findings, imageData: imageData, link: result.link, sharedText: sharedText, categoryNames: categoryNames, hometown: hometown) {
-            result.title = summary.title
-            result.categoryName = matchCategory(summary.category, in: categoryNames)
-            result.notes = summary.notes
-            if let due = parseEventDate(summary.eventDate, time: summary.eventTime) {
-                result.dueDate = due.date
-                result.dueHasTime = due.hasTime
+        let lines = allText
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { line in
+                line.count > 3 && firstLink(in: line)?.absoluteString != line
             }
-            result.usedLanguageModel = true
-        } else {
-            // Fallback: first line of shared or screenshot text (or what Vision saw)
-            // as the title, category Other.
-            let firstLine = ((sharedText ?? "") + "\n" + findings.text)
-                .split(separator: "\n")
-                .map { $0.trimmingCharacters(in: .whitespaces) }
-                .first(where: { $0.count > 3 })
-                .map { String($0.prefix(60)) }
-            result.title = firstLine ?? findings.labels.first?.capitalized ?? ""
-            result.categoryName = nil  // apply() files it under Other
+        if let first = lines.first {
+            result.title = String(first.prefix(60))
+            let rest = lines.dropFirst().prefix(2).joined(separator: " · ")
+            result.notes = String(rest.prefix(160))
+        } else if !findings.labels.isEmpty {
+            result.title = findings.labels[0].capitalized
+            result.notes = "Looks like: " + findings.labels.prefix(3).joined(separator: ", ")
         }
+
+        if let due = firstUpcomingDate(in: allText) {
+            result.dueDate = due.date
+            result.dueHasTime = due.hasTime
+        }
+
+        // Simple category rules: a date means an event, a link or caption means content.
+        if result.dueDate != nil, let events = context.eventsName {
+            result.categoryName = events
+        } else if result.link != nil || !(sharedText ?? "").isEmpty, let content = context.contentName {
+            result.categoryName = content
+        }
+
+        result.engine = (findings.text.isEmpty && findings.labels.isEmpty && result.link == nil) ? .none : .vision
         return result
+    }
+
+    /// Whether text recognition alone gave a usable card.
+    private static func isComplete(_ result: AnalysisResult, findings: VisionFindings) -> Bool {
+        !result.title.isEmpty && result.categoryName != nil && findings.text.count >= 20
+    }
+
+    /// Lays the AI's answer over the Vision result, keeping Vision's fields where the AI left blanks.
+    private static func merge(_ summary: ScreenshotSummary, into result: inout AnalysisResult, categoryNames: [String]) {
+        let title = summary.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !title.isEmpty { result.title = title }
+        if let category = matchCategory(summary.category, in: categoryNames) { result.categoryName = category }
+        let notes = summary.notes.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !notes.isEmpty { result.notes = notes }
+        if let due = parseEventDate(summary.eventDate, time: summary.eventTime) {
+            result.dueDate = due.date
+            result.dueHasTime = due.hasTime
+        }
+    }
+
+    /// The first date in the text that hasn't passed, and whether it included a time.
+    static func firstUpcomingDate(in text: String) -> (date: Date, hasTime: Bool)? {
+        guard !text.isEmpty,
+              let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.date.rawValue) else { return nil }
+        let range = NSRange(text.startIndex..., in: text)
+        let cutoff = Date().addingTimeInterval(-86_400)
+        for match in detector.matches(in: text, options: [], range: range) {
+            guard let date = match.date, date > cutoff, let matchRange = Range(match.range, in: text) else { continue }
+            let snippet = text[matchRange].lowercased()
+            let hasTime = snippet.contains(":") || snippet.contains("am") || snippet.contains("pm")
+            return (hasTime ? date : Calendar.current.startOfDay(for: date), hasTime)
+        }
+        return nil
     }
 
     /// Fills in the card. Normally only fields the user hasn't typed into yet;
@@ -107,6 +202,9 @@ enum ScreenshotAnalyzer {
             item.dueDate = due
             item.dueHasTime = result.dueHasTime
             item.dueOptionRaw = DueOption.custom.rawValue
+        }
+        if result.engine != .none {
+            item.analysisEngineRaw = result.engine.rawValue
         }
         item.needsAnalysis = false
     }
@@ -153,12 +251,15 @@ enum ScreenshotAnalyzer {
         let descriptor = FetchDescriptor<ForLaterItem>(predicate: #Predicate { $0.needsAnalysis == true })
         guard let pending = try? context.fetch(descriptor), !pending.isEmpty else { return }
         let categories = (try? context.fetch(FetchDescriptor<ForLaterCategory>(sortBy: [SortDescriptor(\.sortOrder)]))) ?? []
-        let names = categories.map(\.name)
-        let hometown = DataStore.settings(in: context).hometown
+        let analysisContext = AnalysisContext(in: context, categories: categories)
         for item in pending {
+            if analysisContext.mode == .manual {
+                item.needsAnalysis = false
+                continue
+            }
             await enrichFromLink(item)
             let result = await analyze(imageData: item.screenshot, sharedLink: item.link, sharedText: item.sharedText,
-                                       categoryNames: names, hometown: hometown)
+                                       context: analysisContext)
             apply(result, to: item, categories: categories)
         }
         try? context.save()
@@ -168,6 +269,19 @@ enum ScreenshotAnalyzer {
 
     static var isLanguageModelAvailable: Bool {
         SystemLanguageModel.default.isAvailable
+    }
+
+    /// Whether Apple's Private Cloud Compute model can be used right now. Needs
+    /// iOS 27, the PCC entitlement for this app, a network connection and quota.
+    static var isCloudModelAvailable: Bool {
+        if #available(iOS 27.0, *) {
+            return PrivateCloudComputeLanguageModel().isAvailable
+        }
+        return false
+    }
+
+    private enum ModelChoice {
+        case onDevice, cloud
     }
 
     private static let instructions = """
@@ -182,15 +296,25 @@ enum ScreenshotAnalyzer {
     person's location.
     """
 
-    private static func summarize(findings: VisionFindings, imageData: Data?, link: String?, sharedText: String?, categoryNames: [String], hometown: String?) async -> ScreenshotSummary? {
-        guard isLanguageModelAvailable else { return nil }
+    private static func summarize(using choice: ModelChoice, findings: VisionFindings, imageData: Data?, link: String?, sharedText: String?, context: AnalysisContext) async -> ScreenshotSummary? {
+        let makeSession: () -> LanguageModelSession
+        switch choice {
+        case .onDevice:
+            guard isLanguageModelAvailable else { return nil }
+            makeSession = { LanguageModelSession(instructions: instructions) }
+        case .cloud:
+            guard #available(iOS 27.0, *) else { return nil }
+            let model = PrivateCloudComputeLanguageModel()
+            guard model.isAvailable else { return nil }
+            makeSession = { LanguageModelSession(model: model, instructions: instructions) }
+        }
 
-        let prompt = makePrompt(findings: findings, link: link, sharedText: sharedText, categoryNames: categoryNames, hometown: hometown)
+        let prompt = makePrompt(findings: findings, link: link, sharedText: sharedText, context: context)
 
         // iOS 27+: let the model look at the image itself, not just its text.
         if #available(iOS 27.0, *), let imageData, let cgImage = modelImage(from: imageData) {
             do {
-                let session = LanguageModelSession(instructions: instructions)
+                let session = makeSession()
                 let response = try await session.respond(generating: ScreenshotSummary.self) {
                     prompt
                     Attachment(cgImage)
@@ -204,7 +328,7 @@ enum ScreenshotAnalyzer {
         // Text only (iOS 26, or if the image prompt failed).
         guard !(findings.text.isEmpty && findings.labels.isEmpty && (link ?? "").isEmpty && (sharedText ?? "").isEmpty) else { return nil }
         do {
-            let session = LanguageModelSession(instructions: instructions)
+            let session = makeSession()
             let response = try await session.respond(to: prompt, generating: ScreenshotSummary.self)
             return response.content
         } catch {
@@ -213,10 +337,10 @@ enum ScreenshotAnalyzer {
         }
     }
 
-    private static func makePrompt(findings: VisionFindings, link: String?, sharedText: String?, categoryNames: [String], hometown: String?) -> String {
+    private static func makePrompt(findings: VisionFindings, link: String?, sharedText: String?, context: AnalysisContext) -> String {
         let now = Date()
         let region = Locale.current.region?.identifier ?? "unknown"
-        let town = hometown?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let town = context.location
         let location = town.isEmpty
             ? "The person's time zone is \(TimeZone.current.identifier) (country/region: \(region)). Use this as their location."
             : "The person lives in \(town) (time zone \(TimeZone.current.identifier)). Use this as their location."
@@ -224,7 +348,7 @@ enum ScreenshotAnalyzer {
         return """
         Today is \(now.formatted(date: .complete, time: .omitted)).
         \(location)
-        Categories: \(categoryNames.joined(separator: ", "))
+        Categories: \(context.categoryNames.joined(separator: ", "))
         Link: \(link ?? "none")
         Shared with the link (title, author, caption): \((sharedText ?? "").isEmpty ? "none" : String((sharedText ?? "").prefix(800)))
         Things recognized in the image: \(findings.labels.isEmpty ? "none" : findings.labels.joined(separator: ", "))

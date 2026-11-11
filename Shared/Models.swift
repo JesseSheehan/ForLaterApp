@@ -29,6 +29,8 @@ final class ForLaterItem {
     var dueOptionRaw: String = ""
     /// Extra text that came with a shared link, like an Instagram post's author and caption.
     var sharedText: String = ""
+    /// Which step filled in the card (see `AnalysisEngine`), shown in the details.
+    var analysisEngineRaw: String = ""
     /// Brought back from the archive. Revived items are shown in purple.
     var isRevived: Bool = false
     var revivedAt: Date?
@@ -140,6 +142,7 @@ final class ForLaterCategory {
     var isOther: Bool { builtInKey == "other" }
     /// Events items get the due date option.
     var isEvents: Bool { builtInKey == "events" }
+    var isContent: Bool { builtInKey == "content" }
 }
 
 /// One of the user's daily "look at your For Laters" times (1 to 12 of them).
@@ -181,9 +184,30 @@ final class AppSettings {
     var hometown: String = ""
     /// How long archived items keep their screenshot. See `ScreenshotRetention`.
     var screenshotRetentionRaw: String = ScreenshotRetention.thirtyDays.rawValue
+    /// How much AI to use (see `AIMode`). On-device AI by default.
+    var aiModeRaw: String = AIMode.onDevice.rawValue
+    /// On: AI polishes every text-recognition result. Off: AI only steps in when
+    /// text recognition comes up short (no text, title or category).
+    var aiAlwaysRefines: Bool = true
+    /// Use the phone's location (city only) instead of the hometown.
+    var useLocation: Bool = false
+    /// The city from the last location check, like "Austin, TX".
+    var locationCity: String = ""
 
     init(hometown: String = "") {
         self.hometown = hometown
+    }
+
+    var aiMode: AIMode {
+        get { AIMode(rawValue: aiModeRaw) ?? .onDevice }
+        set { aiModeRaw = newValue.rawValue }
+    }
+
+    /// The place the AI should treat as "near you": current city if location is
+    /// on and known, otherwise the hometown. Empty if neither is set.
+    var aiLocation: String {
+        if useLocation, !locationCity.isEmpty { return locationCity }
+        return hometown.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     var screenshotRetention: ScreenshotRetention {
@@ -259,6 +283,59 @@ enum DueOption: String, CaseIterable, Identifiable {
         case .sixMonths: return calendar.date(byAdding: .month, value: 6, to: now)
         case .oneYear: return calendar.date(byAdding: .year, value: 1, to: now)
         case .custom: return nil
+        }
+    }
+}
+
+/// How much AI For Later uses. Each level adds to the one before it:
+/// Vision/OCR, then on-device AI, then Private Cloud Compute.
+enum AIMode: String, CaseIterable, Identifiable {
+    case manual, visionOnly, onDevice, full
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .manual: "Manual"
+        case .visionOnly: "Limited AI (Vision/OCR)"
+        case .onDevice: "On-device AI"
+        case .full: "Full AI"
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .manual:
+            "Nothing is read automatically. You fill in every card yourself."
+        case .visionOnly:
+            "Apple's Vision reads the text, links and dates in your screenshot and puts them in the right fields. No AI language model is used."
+        case .onDevice:
+            "Adds Apple's on-device AI to write clear titles, pick categories and understand photos. Everything runs on your iPhone; nothing is sent to any server."
+        case .full:
+            "Adds Apple's Private Cloud Compute, used only when on-device AI isn't available or can't handle a screenshot. Apple's secure servers process the request and don't keep it."
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .manual: "hand.point.up.left"
+        case .visionOnly: "text.viewfinder"
+        case .onDevice: "iphone"
+        case .full: "icloud"
+        }
+    }
+}
+
+/// Which step actually filled in a card.
+enum AnalysisEngine: String {
+    case none, vision, onDevice, cloud
+
+    var label: String {
+        switch self {
+        case .none: "You"
+        case .vision: "Text recognition (on this device)"
+        case .onDevice: "On-device AI"
+        case .cloud: "Private Cloud Compute"
         }
     }
 }
