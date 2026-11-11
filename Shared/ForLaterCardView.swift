@@ -56,7 +56,9 @@ struct ForLaterCardView: View {
             if isAnalyzing || isRunningAI {
                 Section {
                     HStack(spacing: 12) {
-                        ProgressView()
+                        Image(systemName: "sparkles")
+                            .foregroundStyle(.tint)
+                            .symbolEffect(.pulse)
                         Text("Reading your screenshot…")
                             .foregroundStyle(.secondary)
                     }
@@ -250,8 +252,9 @@ struct ForLaterCardView: View {
             .resizable()
             .scaledToFit()
             .frame(maxHeight: 220)
-            .frame(maxWidth: .infinity)
+            .scanShimmer(isAnalyzing || isRunningAI)
             .clipShape(RoundedRectangle(cornerRadius: 12))
+            .frame(maxWidth: .infinity)
     }
 
     private func runAI() async {

@@ -391,6 +391,19 @@ private struct DeskCard: View {
     let onOpen: () -> Void
     let onDone: () -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// True while the card flies off toward the top after tapping Done.
+    @State private var isLeaving = false
+
+    private func flyAwayThenArchive() {
+        guard !isLeaving else { return }
+        withAnimation(.easeIn(duration: reduceMotion ? 0.2 : 0.4)) { isLeaving = true }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(reduceMotion ? 200 : 400))
+            onDone()
+        }
+    }
+
     var body: some View {
         let highlight = item.highlightColor(at: now)
         let shape = RoundedRectangle(cornerRadius: 22, style: .continuous)
@@ -434,7 +447,7 @@ private struct DeskCard: View {
             }
             .font(.footnote)
 
-            Button(action: onDone) {
+            Button(action: flyAwayThenArchive) {
                 Label("Done", systemImage: "checkmark")
                     .frame(maxWidth: .infinity)
             }
@@ -449,6 +462,12 @@ private struct DeskCard: View {
         .contentShape(shape)
         .onTapGesture(perform: onOpen)
         .overdueShake(item.isOverdue(at: now))
+        // Done: the card shrinks, tilts and flies up and away into the archive.
+        .scaleEffect(isLeaving && !reduceMotion ? 0.75 : 1)
+        .rotationEffect(.degrees(isLeaving && !reduceMotion ? -8 : 0))
+        .offset(y: isLeaving && !reduceMotion ? -900 : 0)
+        .opacity(isLeaving ? 0 : 1)
+        .allowsHitTesting(!isLeaving)
     }
 }
 

@@ -12,6 +12,7 @@ struct ArchiveView: View {
 
     @State private var pendingDelete: ForLaterItem?
     @State private var viewing: ForLaterItem?
+    @State private var sparkleID: UUID?
 
     var body: some View {
         Group {
@@ -39,6 +40,12 @@ struct ArchiveView: View {
                 }
             }
         }
+        .overlay {
+            if let sparkleID {
+                ReviveSparkleView()
+                    .id(sparkleID)
+            }
+        }
         .navigationTitle("Archive")
         .sheet(item: $viewing) { item in
             ItemDetailView(item: item)
@@ -59,6 +66,13 @@ struct ArchiveView: View {
 
     private func revive(_ item: ForLaterItem) {
         withAnimation { Archive.revive(item, in: context) }
+        // Purple sparkle burst; a new id restarts it if you revive several in a row.
+        let id = UUID()
+        sparkleID = id
+        Task {
+            try? await Task.sleep(for: .seconds(2))
+            if sparkleID == id { sparkleID = nil }
+        }
     }
 }
 
