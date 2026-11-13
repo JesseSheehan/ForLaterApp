@@ -34,6 +34,9 @@ final class ForLaterItem {
     /// Brought back from the archive. Revived items are shown in purple.
     var isRevived: Bool = false
     var revivedAt: Date?
+    /// How this item reminds you (see `ReminderKind`). Empty for items made
+    /// before reminder kinds existed: daily if `slotMinutes` is set, otherwise custom.
+    var reminderKindRaw: String = ""
 
     init(title: String = "", screenshot: Data? = nil, link: String = "") {
         self.title = title
@@ -45,6 +48,25 @@ final class ForLaterItem {
 
     /// Done items live in the archive.
     var isCompleted: Bool { completedAt != nil }
+
+    var reminderKind: ReminderKind {
+        get { ReminderKind(rawValue: reminderKindRaw) ?? (slotMinutes != nil ? .daily : .custom) }
+        set { reminderKindRaw = newValue.rawValue }
+    }
+
+    /// Waiting on the desk: its reminder time has come and it wants reminders.
+    func isWaiting(at now: Date = Date()) -> Bool {
+        completedAt == nil && reminderKind != .none && remindAt <= now
+    }
+
+    /// "Reminder Nov 14, 6:00 PM", "Weekly check-in, Sun 10:00 AM" or "No reminder".
+    var reminderLabel: String {
+        switch reminderKind {
+        case .none: "No reminder"
+        case .weekly: "Weekly check-in, \(remindAt.formatted(.dateTime.weekday(.abbreviated).hour().minute()))"
+        case .daily, .custom: "Reminder \(remindAt.formatted(date: .abbreviated, time: .shortened))"
+        }
+    }
 
     /// The moment the item becomes overdue: the due time, or the end of the due day.
     var dueDeadline: Date? {
@@ -126,6 +148,12 @@ final class ForLaterCategory {
     /// so they keep working after the user renames them. Empty for user-made ones.
     var builtInKey: String = ""
     var sortOrder: Int = 0
+    /// The reminder new items in this category start with (see `ReminderKind`).
+    /// Empty means a daily check-in, like before.
+    var defaultReminderRaw: String = ""
+    /// Adding an item here updates the Today summary, when the user picked
+    /// "certain categories" for that.
+    var triggersSummary: Bool = false
     @Relationship(deleteRule: .nullify, inverse: \ForLaterItem.category)
     var items: [ForLaterItem]? = []
 
@@ -143,6 +171,34 @@ final class ForLaterCategory {
     /// Events items get the due date option.
     var isEvents: Bool { builtInKey == "events" }
     var isContent: Bool { builtInKey == "content" }
+
+    var defaultReminder: ReminderKind {
+        get { ReminderKind(rawValue: defaultReminderRaw) ?? .daily }
+        set { defaultReminderRaw = newValue == .daily ? "" : newValue.rawValue }
+    }
+}
+
+/// How an item reminds you.
+enum ReminderKind: String, CaseIterable, Identifiable {
+    /// At one of the daily check-in times (the default).
+    case daily
+    /// Only at the weekly check-in, for things that don't need a daily nudge, like recipes.
+    case weekly
+    /// At an exact date and time.
+    case custom
+    /// Never. It just waits on the desk.
+    case none
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .daily: "Daily check-in"
+        case .weekly: "Weekly check-in"
+        case .custom: "Custom date and time"
+        case .none: "No reminder"
+        }
+    }
 }
 
 /// One of the user's daily "look at your For Laters" times (1 to 12 of them).
@@ -194,6 +250,34 @@ final class AppSettings {
     /// The city from the last location check, like "Austin, TX".
     var locationCity: String = ""
 
+    // Weekly check-in
+    /// Days of the week for the weekly check-in, as Calendar weekdays
+    /// (1 = Sunday ... 7 = Saturday), comma separated. Sunday by default.
+    var weeklyDaysRaw: String = "1"
+    /// Weekly check-in time, in minutes after midnight. 10 AM by default.
+    var weeklyMinutes: Int = 600
+
+    // Today summary
+    var summaryEnabled: Bool = true
+    /// The user's own instructions for the summary, up to `summaryInstructionsLimit` characters.
+    var summaryInstructions: String = ""
+    /// Update at the daily check-in times (the default).
+    var summaryAtCheckIns: Bool = true
+    /// Update at times of the user's choosing.
+    var summaryAtCustomTimes: Bool = false
+    /// Those times, in minutes after midnight, comma separated.
+    var summaryCustomTimesRaw: String = "480"
+    /// Update whenever a new For Later is added.
+    var summaryOnNewItem: Bool = false
+    /// With `summaryOnNewItem`: only for categories marked `triggersSummary`.
+    var summaryOnlyCertainCategories: Bool = false
+    /// Include events from the iPhone's calendars (Apple, Google, Outlook accounts added in iOS).
+    var summaryUsesCalendar: Bool = false
+    /// Calendar identifiers to read, comma separated. Empty means all calendars.
+    var summaryCalendarIDsRaw: String = ""
+
+    static let summaryInstructionsLimit = 1000
+
     init(hometown: String = "") {
         self.hometown = hometown
     }
@@ -208,6 +292,42 @@ final class AppSettings {
     var aiLocation: String {
         if useLocation, !locationCity.isEmpty { return locationCity }
         return hometown.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var weeklyDays: Set<Int> {
+        get { Set(weeklyDaysRaw.split(separator: ",").compactMap { Int($0) }.filter { (1...7).contains($0) }) }
+        set { weeklyDaysRaw = newValue.sorted().map(String.init).joined(separator: ",") }
+    }
+
+    /// The next weekly check-in after `date`.
+    func nextWeeklyCheckIn(after date: Date = Date()) -> Date {
+        let calendar = Calendar.current
+        let days = weeklyDays.isEmpty ? [1] : weeklyDays
+        let candidates = days.compactMap { weekday in
+            calendar.nextDate(after: date,
+                              matching: DateComponents(hour: weeklyMinutes / 60, minute: weeklyMinutes % 60, weekday: weekday),
+                              matchingPolicy: .nextTime)
+        }
+        return candidates.min() ?? date.addingTimeInterval(7 * 86_400)
+    }
+
+    /// "Sun 10:00 AM" or "Sun & Wed 10:00 AM".
+    var weeklyLabel: String {
+        let symbols = Calendar.current.shortWeekdaySymbols
+        let days = weeklyDays.sorted().map { symbols[$0 - 1] }.joined(separator: " & ")
+        let time = Calendar.current.date(from: DateComponents(hour: weeklyMinutes / 60, minute: weeklyMinutes % 60))?
+            .formatted(date: .omitted, time: .shortened) ?? ""
+        return days.isEmpty ? time : "\(days) \(time)"
+    }
+
+    var summaryCustomTimes: [Int] {
+        get { summaryCustomTimesRaw.split(separator: ",").compactMap { Int($0) }.sorted() }
+        set { summaryCustomTimesRaw = newValue.sorted().map(String.init).joined(separator: ",") }
+    }
+
+    var summaryCalendarIDs: Set<String> {
+        get { Set(summaryCalendarIDsRaw.split(separator: ",").map(String.init)) }
+        set { summaryCalendarIDsRaw = newValue.sorted().joined(separator: ",") }
     }
 
     var screenshotRetention: ScreenshotRetention {

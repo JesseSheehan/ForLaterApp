@@ -20,16 +20,8 @@ enum Archive {
         item.completedAt = nil
         item.isRevived = true
         item.revivedAt = Date()
-        // If its reminder time has passed, move it to the next time that slot comes around.
-        if item.remindAt < Date() {
-            if let slot = item.slotMinutes {
-                item.remindAt = CheckInTime.nextOccurrence(minutesAfterMidnight: slot)
-            } else {
-                let first = (try? context.fetch(FetchDescriptor<CheckInTime>(sortBy: [SortDescriptor(\.hour), SortDescriptor(\.minute)])))?.first
-                item.remindAt = first?.nextOccurrence() ?? Date().addingTimeInterval(3_600)
-                item.slotMinutes = first?.minutesAfterMidnight
-            }
-        }
+        // If its reminder time has passed, move it to the next time it comes around.
+        Reminders.moveForwardIfPassed(item, in: context)
         try? context.save()
     }
 

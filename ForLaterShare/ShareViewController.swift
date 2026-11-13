@@ -185,6 +185,6 @@ private struct ShareCard: View {
     var onDone: () -> Void
 
     var body: some View {
-        ForLaterCardView(item: item, isAnalyzing: state.isAnalyzing, onCancel: onCancel, onDone: onDone)
+        ForLaterCardView(item: item, isAnalyzing: state.isAnalyzing, isNew: true, onCancel: onCancel, onDone: onDone)
     }
 }

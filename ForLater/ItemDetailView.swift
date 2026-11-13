@@ -8,6 +8,8 @@ struct ItemDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @Bindable var item: ForLaterItem
     @State private var isEditing = false
+    @State private var showingAddToCalendar = false
+    @State private var addedToCalendar = false
 
     var body: some View {
         NavigationStack {
@@ -71,7 +73,14 @@ struct ItemDetailView: View {
                     if let due = item.dueLabel {
                         infoRow("Due", due, systemImage: "calendar", color: item.isOverdue(at: now) ? Color.red : nil)
                     }
-                    infoRow("Reminder", item.remindAt.formatted(date: .abbreviated, time: .shortened), systemImage: "bell")
+                    switch item.reminderKind {
+                    case .none:
+                        infoRow("Reminder", "None", systemImage: "bell.slash")
+                    case .weekly:
+                        infoRow("Weekly check-in", item.remindAt.formatted(date: .abbreviated, time: .shortened), systemImage: "bell")
+                    case .daily, .custom:
+                        infoRow("Reminder", item.remindAt.formatted(date: .abbreviated, time: .shortened), systemImage: "bell")
+                    }
                     infoRow("Added", item.createdAt.formatted(date: .abbreviated, time: .shortened), systemImage: "plus.circle")
                     if let engine = AnalysisEngine(rawValue: item.analysisEngineRaw), engine != .none {
                         infoRow("Filled in by", engine.label, systemImage: "cpu")
@@ -84,6 +93,25 @@ struct ItemDetailView: View {
                 .padding(14)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+                if item.dueDate != nil || item.category?.isEvents == true {
+                    Button {
+                        showingAddToCalendar = true
+                    } label: {
+                        Label(addedToCalendar ? "Added to Calendar" : "Add to Calendar",
+                              systemImage: addedToCalendar ? "checkmark.circle" : "calendar.badge.plus")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    .sheet(isPresented: $showingAddToCalendar) {
+                        AddToCalendarView(item: item) { added in
+                            showingAddToCalendar = false
+                            if added { addedToCalendar = true }
+                        }
+                        .ignoresSafeArea()
+                    }
+                }
 
                 if !item.isCompleted {
                     Button {

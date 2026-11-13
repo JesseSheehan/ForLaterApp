@@ -37,6 +37,20 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    NavigationLink {
+                        TodaySettingsView()
+                    } label: {
+                        LabeledContent {
+                            Text(settings?.summaryEnabled == false ? "Off" : "On")
+                        } label: {
+                            Label("Today summary", systemImage: "sun.max")
+                        }
+                    }
+                } footer: {
+                    Text("Your instructions, when it updates, and your calendar.")
+                }
+
+                Section {
                     NotificationStatusRow()
                 } header: {
                     Text("Notifications")
@@ -76,6 +90,10 @@ struct SettingsView: View {
                     Text("Daily check-in times")
                 } footer: {
                     Text("Fewer is better. One check-in a day, as part of your routine, works best. You can have up to \(maxTimes).")
+                }
+
+                if let settings {
+                    WeeklyCheckInSection(settings: settings)
                 }
 
                 Section {
@@ -188,5 +206,63 @@ private struct NotificationStatusRow: View {
 
     private func refresh() async {
         status = await NotificationScheduler.authorizationStatus()
+    }
+}
+
+/// The weekly check-in: one or two days a week, for items that don't need a
+/// daily nudge (like recipes). Items or categories opt in to it.
+private struct WeeklyCheckInSection: View {
+    @Bindable var settings: AppSettings
+
+    var body: some View {
+        Section {
+            HStack(spacing: 6) {
+                ForEach(1...7, id: \.self) { weekday in
+                    let isOn = settings.weeklyDays.contains(weekday)
+                    Button {
+                        toggle(weekday)
+                    } label: {
+                        Text(Calendar.current.veryShortWeekdaySymbols[weekday - 1])
+                            .font(.subheadline.weight(.semibold))
+                            .frame(maxWidth: .infinity, minHeight: 34)
+                            .background(isOn ? AnyShapeStyle(.tint) : AnyShapeStyle(Color(.tertiarySystemFill)), in: Circle())
+                            .foregroundStyle(isOn ? Color.white : Color.primary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(Calendar.current.weekdaySymbols[weekday - 1])
+                    .accessibilityAddTraits(isOn ? .isSelected : [])
+                }
+            }
+            .padding(.vertical, 4)
+
+            DatePicker("Time", selection: timeBinding, displayedComponents: .hourAndMinute)
+        } header: {
+            Text("Weekly check-in")
+        } footer: {
+            Text("For things that don't need a daily nudge, like recipes. Choose Weekly check-in as an item's reminder, or make it a category's default in Categories. Once or twice a week works best.")
+        }
+    }
+
+    private func toggle(_ weekday: Int) {
+        var days = settings.weeklyDays
+        if days.contains(weekday) {
+            guard days.count > 1 else { return }  // at least one day
+            days.remove(weekday)
+        } else {
+            days.insert(weekday)
+        }
+        settings.weeklyDays = days
+    }
+
+    private var timeBinding: Binding<Date> {
+        Binding(
+            get: {
+                Calendar.current.date(from: DateComponents(hour: settings.weeklyMinutes / 60, minute: settings.weeklyMinutes % 60)) ?? Date()
+            },
+            set: { newValue in
+                let parts = Calendar.current.dateComponents([.hour, .minute], from: newValue)
+                settings.weeklyMinutes = (parts.hour ?? 10) * 60 + (parts.minute ?? 0)
+            }
+        )
     }
 }

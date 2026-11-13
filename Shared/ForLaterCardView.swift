@@ -10,6 +10,8 @@ struct ForLaterCardView: View {
     var isAnalyzing: Bool = false
     /// In the app (not the share sheet): pick a photo and run the AI on demand.
     var allowsPhotoPicking: Bool = false
+    /// A brand-new item: picking its category applies that category's default reminder.
+    var isNew: Bool = false
     var onCancel: (() -> Void)?
     var onDone: () -> Void
 
@@ -24,9 +26,14 @@ struct ForLaterCardView: View {
     @State private var photoSelection: PhotosPickerItem?
     @State private var aiMode: AIMode = .onDevice
     @State private var isRunningAI = false
+    @State private var weeklyLabel = ""
+    /// True once the user picks a reminder by hand, so a category default doesn't override it.
+    @State private var userPickedReminder = false
 
     private static let unsetChoice = -2
     private static let customChoice = -1
+    private static let weeklyChoice = -3
+    private static let noneChoice = -4
 
     var body: some View {
         Form {
@@ -115,22 +122,36 @@ struct ForLaterCardView: View {
             }
 
             Section {
-                Picker("Remind me", selection: $reminderChoice) {
-                    ForEach(checkInTimes) { time in
-                        Text(time.label).tag(time.minutesAfterMidnight)
+                Picker("Remind me", selection: reminderPickerBinding) {
+                    Section("Daily check-in") {
+                        ForEach(checkInTimes) { time in
+                            Text(time.label).tag(time.minutesAfterMidnight)
+                        }
                     }
+                    Text("Weekly check-in").tag(Self.weeklyChoice)
                     Text("Custom date and time").tag(Self.customChoice)
+                    Text("No reminder").tag(Self.noneChoice)
                 }
-                if reminderChoice == Self.customChoice {
+                switch reminderChoice {
+                case Self.customChoice:
                     DatePicker("When", selection: $item.remindAt, in: Date()...)
-                } else {
+                case Self.noneChoice:
+                    EmptyView()
+                default:
                     LabeledContent("Next reminder", value: item.remindAt.formatted(date: .abbreviated, time: .shortened))
                         .foregroundStyle(.secondary)
                 }
             } header: {
                 Text("Reminder")
             } footer: {
-                Text("Tip: a single daily check-in works best. Make it part of your routine.")
+                switch reminderChoice {
+                case Self.weeklyChoice:
+                    Text("Only mentioned at your weekly check-in (\(weeklyLabel)). Good for things that don't need a daily nudge, like recipes.")
+                case Self.noneChoice:
+                    Text("No notifications. It stays on your desk and in your Today summary until you mark it Done.")
+                default:
+                    Text("Tip: a single daily check-in works best. Make it part of your routine.")
+                }
             }
 
             Section("Link") {
@@ -165,9 +186,13 @@ struct ForLaterCardView: View {
             }
         }
         .onAppear {
+            let settings = DataStore.settings(in: context)
+            aiMode = settings.aiMode
+            weeklyLabel = settings.weeklyLabel
             setUpReminderChoice()
-            aiMode = DataStore.settings(in: context).aiMode
+            applyCategoryDefault()
         }
+        .onChange(of: item.category) { _, _ in applyCategoryDefault() }
         .onChange(of: photoSelection) { _, selection in
             guard let selection else { return }
             Task {
@@ -178,14 +203,12 @@ struct ForLaterCardView: View {
         }
         .onChange(of: checkInTimes.count) { _, _ in setUpReminderChoice() }
         .onChange(of: reminderChoice) { _, newValue in
-            if newValue >= 0 {
-                item.slotMinutes = newValue
-                item.remindAt = CheckInTime.nextOccurrence(minutesAfterMidnight: newValue)
-            } else if newValue == Self.customChoice {
-                item.slotMinutes = nil
-                if item.remindAt < Date() {
-                    item.remindAt = Date().addingTimeInterval(3600)
-                }
+            switch newValue {
+            case Self.customChoice: Reminders.apply(.custom, to: item, in: context)
+            case Self.weeklyChoice: Reminders.apply(.weekly, to: item, in: context)
+            case Self.noneChoice: Reminders.apply(.none, to: item, in: context)
+            case let slot where slot >= 0: Reminders.apply(.daily, slot: slot, to: item, in: context)
+            default: break
             }
         }
         .alert("New category", isPresented: $showingNewCategory) {
@@ -277,14 +300,50 @@ struct ForLaterCardView: View {
         ScreenshotAnalyzer.apply(result, to: item, categories: categories, overwrite: true)
     }
 
+    /// The picker's binding: notes that the user chose, so category defaults leave it alone.
+    private var reminderPickerBinding: Binding<Int> {
+        Binding(
+            get: { reminderChoice },
+            set: { newValue in
+                userPickedReminder = true
+                reminderChoice = newValue
+            }
+        )
+    }
+
     private func setUpReminderChoice() {
-        guard reminderChoice == Self.unsetChoice, !checkInTimes.isEmpty else { return }
-        if let slot = item.slotMinutes, checkInTimes.contains(where: { $0.minutesAfterMidnight == slot }) {
-            reminderChoice = slot
-        } else if item.slotMinutes == nil && item.remindAt > Date() && !item.needsAnalysis && !item.title.isEmpty {
+        guard reminderChoice == Self.unsetChoice else { return }
+        switch item.reminderKind {
+        case .weekly:
+            reminderChoice = Self.weeklyChoice
+        case .none:
+            reminderChoice = Self.noneChoice
+        case .daily, .custom:
+            guard !checkInTimes.isEmpty else { return }
+            if let slot = item.slotMinutes, checkInTimes.contains(where: { $0.minutesAfterMidnight == slot }) {
+                reminderChoice = slot
+            } else if item.slotMinutes == nil && item.remindAt > Date() && !item.needsAnalysis && !item.title.isEmpty {
+                reminderChoice = Self.customChoice
+            } else {
+                reminderChoice = checkInTimes[0].minutesAfterMidnight
+            }
+        }
+    }
+
+    /// For a new item: use its category's default reminder, unless the user already picked one.
+    private func applyCategoryDefault() {
+        guard isNew, !userPickedReminder, let category = item.category else { return }
+        switch category.defaultReminder {
+        case .daily:
+            if reminderChoice < 0, let first = checkInTimes.first {
+                reminderChoice = first.minutesAfterMidnight
+            }
+        case .weekly:
+            reminderChoice = Self.weeklyChoice
+        case .none:
+            reminderChoice = Self.noneChoice
+        case .custom:
             reminderChoice = Self.customChoice
-        } else {
-            reminderChoice = checkInTimes[0].minutesAfterMidnight
         }
     }
 

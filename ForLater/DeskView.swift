@@ -60,6 +60,8 @@ struct DeskView: View {
 
     @Query private var checkInTimes: [CheckInTime]
 
+    @Query private var allSettings: [AppSettings]
+
     @AppStorage("deskSort") private var sort: DeskSort = .mostRecent
     @AppStorage("deskLayout") private var layout: DeskLayout = .cards
     /// nil means the "All" tab.
@@ -69,11 +71,16 @@ struct DeskView: View {
     @State private var showingConfetti = false
     /// Set while a just-made item is being thrown away, so that doesn't count as clearing the desk.
     @State private var discardingNew = false
+    @State private var today: TodaySummary? = TodaySummarizer.load()
+    @State private var isGeneratingSummary = false
+
+    private var showsToday: Bool { allSettings.first?.summaryEnabled ?? true }
 
     /// Changes whenever something that affects notifications changes.
     private var scheduleSignature: [String] {
-        openItems.map { "\($0.persistentModelID.hashValue):\($0.remindAt.timeIntervalSince1970):\($0.title)" }
+        openItems.map { "\($0.persistentModelID.hashValue):\($0.remindAt.timeIntervalSince1970):\($0.title):\($0.reminderKindRaw)" }
             + checkInTimes.map { "\($0.hour):\($0.minute)" }
+            + allSettings.map { "weekly:\($0.weeklyDaysRaw):\($0.weeklyMinutes)" }
     }
 
     private var visibleItems: [ForLaterItem] {
@@ -101,15 +108,21 @@ struct DeskView: View {
                 } else if layout == .cards {
                     DeskCarousel(
                         items: visibleItems,
+                        showsToday: showsToday,
                         onOpen: { sheet = .detail($0) },
                         onDone: archive
-                    )
+                    ) {
+                        todayCard(compact: false)
+                    }
                 } else {
                     DeskList(
                         items: visibleItems,
+                        showsToday: showsToday,
                         onOpen: { sheet = .detail($0) },
                         onDone: archive
-                    )
+                    ) {
+                        todayCard(compact: true)
+                    }
                 }
             }
             .safeAreaInset(edge: .top) {
@@ -157,6 +170,7 @@ struct DeskView: View {
                         ForLaterCardView(
                             item: item,
                             allowsPhotoPicking: true,
+                            isNew: true,
                             onCancel: { discardNew(item) },
                             onDone: { self.sheet = nil }
                         )
@@ -181,6 +195,7 @@ struct DeskView: View {
             await LocationProvider.refreshIfEnabled(in: context)
             await ScreenshotAnalyzer.processPending(in: context)
             await NotificationScheduler.reschedule(in: context)
+            await refreshSummary()
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
@@ -189,6 +204,7 @@ struct DeskView: View {
                     await LocationProvider.refreshIfEnabled(in: context)
                     await ScreenshotAnalyzer.processPending(in: context)
                     await NotificationScheduler.reschedule(in: context)
+                    await refreshSummary()
                 }
             } else if phase == .background {
                 Task { await NotificationScheduler.reschedule(in: context) }
@@ -203,6 +219,14 @@ struct DeskView: View {
                 celebrate()
             }
             discardingNew = false
+            // A new For Later can update the summary, if the user chose that.
+            if newCount > oldCount, sheet == nil {
+                Task { await refreshSummary() }
+            }
+        }
+        .onChange(of: sheet == nil) { _, closed in
+            // After adding an item, once its sheet is closed.
+            if closed { Task { await refreshSummary() } }
         }
         .onChange(of: categories) { _, newCategories in
             // If the selected category was deleted in Settings, go back to All.
@@ -210,6 +234,41 @@ struct DeskView: View {
                 selectedCategory = nil
             }
         }
+    }
+
+    private func todayCard(compact: Bool) -> some View {
+        TodayCard(
+            summary: today,
+            items: openItems,
+            isGenerating: isGeneratingSummary,
+            compact: compact,
+            onRefresh: { Task { await refreshSummary(force: true) } },
+            onOpen: { sheet = .detail($0) },
+            onDone: archive,
+            onToggleChecked: toggleChecked
+        )
+    }
+
+    /// Writes a new summary if an update time has passed (or `force`).
+    private func refreshSummary(force: Bool = false) async {
+        guard !isGeneratingSummary, showsToday else { return }
+        guard force || TodaySummarizer.needsRefresh(in: context, lastGenerated: today?.generatedAt) else { return }
+        isGeneratingSummary = true
+        let summary = await TodaySummarizer.generate(in: context)
+        TodaySummarizer.save(summary)
+        withAnimation { today = summary }
+        isGeneratingSummary = false
+    }
+
+    private func toggleChecked(_ todo: TodoEntry) {
+        guard var summary = today else { return }
+        if summary.checked.contains(todo.id) {
+            summary.checked.remove(todo.id)
+        } else {
+            summary.checked.insert(todo.id)
+        }
+        TodaySummarizer.save(summary)
+        today = summary
     }
 
     private func addItem() {
@@ -296,17 +355,29 @@ private struct CategoryTabs: View {
 
 // MARK: - Cards
 
-/// The desk as a row of cards you swipe left and right through.
-private struct DeskCarousel: View {
+/// A page of the carousel: the Today card or a For Later.
+private enum DeskPage: Hashable {
+    case today
+    case item(PersistentIdentifier)
+}
+
+/// The desk as a row of cards you swipe left and right through, with the
+/// Today card pinned first.
+private struct DeskCarousel<Today: View>: View {
     let items: [ForLaterItem]
+    let showsToday: Bool
     let onOpen: (ForLaterItem) -> Void
     let onDone: (ForLaterItem) -> Void
+    @ViewBuilder let today: () -> Today
 
-    @State private var currentID: PersistentIdentifier?
+    @State private var current: DeskPage?
+
+    private var pages: [DeskPage] {
+        (showsToday ? [DeskPage.today] : []) + items.map { DeskPage.item($0.persistentModelID) }
+    }
 
     private var currentIndex: Int {
-        guard let currentID,
-              let index = items.firstIndex(where: { $0.persistentModelID == currentID }) else { return 0 }
+        guard let current, let index = pages.firstIndex(of: current) else { return 0 }
         return index
     }
 
@@ -314,35 +385,47 @@ private struct DeskCarousel: View {
         VStack(spacing: 10) {
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: 14) {
-                    ForEach(items) { item in
-                        // Re-checks every minute so cards turn red when they pass their due date.
-                        TimelineView(.everyMinute) { timeline in
-                            DeskCard(
-                                item: item,
-                                now: timeline.date,
-                                isFocused: item.persistentModelID == (currentID ?? items.first?.persistentModelID),
-                                onOpen: { onOpen(item) },
-                                onDone: { onDone(item) }
-                            )
+                    ForEach(pages, id: \.self) { page in
+                        switch page {
+                        case .today:
+                            today()
+                                .containerRelativeFrame(.horizontal)
+                        case .item(let id):
+                            if let item = items.first(where: { $0.persistentModelID == id }) {
+                                // Re-checks every minute so cards turn red when they pass their due date.
+                                TimelineView(.everyMinute) { timeline in
+                                    DeskCard(
+                                        item: item,
+                                        now: timeline.date,
+                                        isFocused: pages.indices.contains(currentIndex) && pages[currentIndex] == page,
+                                        onOpen: { onOpen(item) },
+                                        onDone: { onDone(item) }
+                                    )
+                                }
+                                .containerRelativeFrame(.horizontal)
+                            }
                         }
-                        .containerRelativeFrame(.horizontal)
                     }
                 }
                 .scrollTargetLayout()
             }
             .contentMargins(.horizontal, 24, for: .scrollContent)
             .scrollTargetBehavior(.viewAligned)
-            .scrollPosition(id: $currentID)
+            .scrollPosition(id: $current)
 
-            SwipeIndicator(count: items.count, index: currentIndex, onMove: move(by:))
+            SwipeIndicator(count: pages.count, index: currentIndex, showsToday: showsToday,
+                           onMove: move(by:), onToday: { jump(to: 0) })
         }
         .padding(.vertical, 8)
     }
 
     private func move(by offset: Int) {
-        let target = currentIndex + offset
-        guard items.indices.contains(target) else { return }
-        withAnimation { currentID = items[target].persistentModelID }
+        jump(to: currentIndex + offset)
+    }
+
+    private func jump(to index: Int) {
+        guard pages.indices.contains(index) else { return }
+        withAnimation { current = pages[index] }
     }
 }
 
@@ -350,7 +433,10 @@ private struct DeskCarousel: View {
 private struct SwipeIndicator: View {
     let count: Int
     let index: Int
+    /// The first page is the Today card, shown as a small sun you can tap to jump back.
+    let showsToday: Bool
     let onMove: (Int) -> Void
+    let onToday: () -> Void
 
     var body: some View {
         HStack(spacing: 16) {
@@ -360,17 +446,28 @@ private struct SwipeIndicator: View {
             .disabled(index == 0)
             .accessibilityLabel("Previous card")
 
-            if count <= 10 {
+            if showsToday {
+                Button(action: onToday) {
+                    Image(systemName: index == 0 ? "sun.max.fill" : "sun.max")
+                        .font(.footnote.weight(.bold))
+                        .foregroundStyle(index == 0 ? Color.accentColor : Color.secondary)
+                }
+                .accessibilityLabel("Today")
+            }
+
+            let itemCount = showsToday ? count - 1 : count
+            let itemIndex = showsToday ? index - 1 : index
+            if itemCount <= 10 {
                 HStack(spacing: 7) {
-                    ForEach(0..<count, id: \.self) { i in
+                    ForEach(0..<max(itemCount, 0), id: \.self) { i in
                         Circle()
-                            .fill(i == index ? Color.primary : Color.secondary.opacity(0.35))
-                            .frame(width: i == index ? 8 : 6, height: i == index ? 8 : 6)
+                            .fill(i == itemIndex ? Color.primary : Color.secondary.opacity(0.35))
+                            .frame(width: i == itemIndex ? 8 : 6, height: i == itemIndex ? 8 : 6)
                     }
                 }
                 .animation(.snappy, value: index)
             } else {
-                Text("\(min(index + 1, count)) of \(count)")
+                Text(itemIndex >= 0 ? "\(itemIndex + 1) of \(itemCount)" : "\(itemCount) waiting")
                     .font(.footnote)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
@@ -443,7 +540,7 @@ private struct DeskCard: View {
                     Label("Due \(due)", systemImage: "calendar")
                         .foregroundStyle(item.isOverdue(at: now) ? Color.red : Color.secondary)
                 }
-                Label("Reminder \(item.remindAt.formatted(date: .abbreviated, time: .shortened))", systemImage: "bell")
+                Label(item.reminderLabel, systemImage: item.reminderKind == .none ? "bell.slash" : "bell")
                     .foregroundStyle(.secondary)
                 if item.needsAnalysis {
                     Label("Waiting for AI…", systemImage: "sparkles")
@@ -478,14 +575,23 @@ private struct DeskCard: View {
 
 // MARK: - List
 
-private struct DeskList: View {
+private struct DeskList<Today: View>: View {
     let items: [ForLaterItem]
+    let showsToday: Bool
     let onOpen: (ForLaterItem) -> Void
     let onDone: (ForLaterItem) -> Void
+    @ViewBuilder let today: () -> Today
 
     var body: some View {
         TimelineView(.everyMinute) { timeline in
             List {
+                if showsToday {
+                    Section {
+                        today()
+                            .padding(.vertical, 6)
+                            .listRowBackground(Color.accentColor.opacity(0.08))
+                    }
+                }
                 ForEach(items) { item in
                     DeskRow(item: item, now: timeline.date, onDone: { onDone(item) })
                         .contentShape(Rectangle())
@@ -538,6 +644,8 @@ private struct DeskRow: View {
                     if let due = item.dueLabel {
                         Text("Due \(due)")
                             .foregroundStyle(item.isOverdue(at: now) ? Color.red : Color.secondary)
+                    } else if item.reminderKind == .none {
+                        Text("No reminder")
                     } else {
                         Text(item.remindAt.formatted(date: .abbreviated, time: .shortened))
                     }

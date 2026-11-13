@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>For Later can include your upcoming events in your Today summary. Events are only read on this iPhone and are never changed or sent anywhere.</string>
+	<key>NSCalendarsWriteOnlyAccessUsageDescription</key>
+	<string>For Later can add events you've saved, like concerts, to your calendar.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>For Later uses your city (never your exact location) so the AI can pick things near you, like the closest tour date. Entering a hometown instead works without location access.</string>
 	<key>UIBackgroundModes</key>

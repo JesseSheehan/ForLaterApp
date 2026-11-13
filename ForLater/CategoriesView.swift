@@ -9,7 +9,6 @@ struct CategoriesView: View {
 
     @Query(sort: \ForLaterCategory.sortOrder) private var categories: [ForLaterCategory]
 
-    @State private var renaming: ForLaterCategory?
     @State private var nameDraft = ""
     @State private var addingNew = false
     @State private var errorMessage: String?
@@ -18,27 +17,34 @@ struct CategoriesView: View {
         List {
             Section {
                 ForEach(categories) { category in
-                    HStack {
-                        Text(category.name)
-                        Spacer()
-                        if category.isOther {
-                            Image(systemName: "lock.fill")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .accessibilityLabel("Can't be renamed or deleted")
-                        } else {
-                            Text("\(category.items?.filter { $0.completedAt == nil }.count ?? 0)")
-                                .foregroundStyle(.secondary)
+                    NavigationLink {
+                        CategoryDetailView(category: category, otherNames: categories.filter { $0 !== category }.map(\.name))
+                    } label: {
+                        HStack {
+                            Text(category.name)
+                            if category.defaultReminder != .daily {
+                                Image(systemName: category.defaultReminder == .none ? "bell.slash" : "calendar.badge.clock")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if category.isOther {
+                                Image(systemName: "lock.fill")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .accessibilityLabel("Can't be renamed or deleted")
+                            } else {
+                                Text("\(category.items?.filter { $0.completedAt == nil }.count ?? 0)")
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
-                    .contentShape(Rectangle())
-                    .onTapGesture { startRenaming(category) }
                     .deleteDisabled(category.isOther)
                 }
                 .onMove(perform: move)
                 .onDelete(perform: delete)
             } footer: {
-                Text("Drag to change the order of the tabs on your desk. Tap a category to rename it. Deleting a category moves its items to Other.")
+                Text("Drag to change the order of the tabs on your desk. Tap a category to rename it or set its default reminder. Deleting a category moves its items to Other.")
             }
 
             Section {
@@ -50,11 +56,6 @@ struct CategoriesView: View {
         }
         .navigationTitle("Categories")
         .toolbar { EditButton() }
-        .alert("Rename category", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
-            TextField("Name", text: $nameDraft)
-            Button("Cancel", role: .cancel) { renaming = nil }
-            Button("Save") { saveRename() }
-        }
         .alert("New category", isPresented: $addingNew) {
             TextField("Name, like Jobs or Gifts", text: $nameDraft)
             Button("Cancel", role: .cancel) {}
@@ -67,29 +68,15 @@ struct CategoriesView: View {
         }
     }
 
-    private func startRenaming(_ category: ForLaterCategory) {
-        guard !category.isOther else { return }
-        nameDraft = category.name
-        renaming = category
-    }
-
     /// Returns the cleaned-up name, or nil (and shows why) if it can't be used.
-    private func validName(_ draft: String, excluding current: ForLaterCategory? = nil) -> String? {
+    private func validName(_ draft: String) -> String? {
         let name = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return nil }
-        if categories.contains(where: { $0 !== current && $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
+        if categories.contains(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
             errorMessage = "You already have a category called \(name)."
             return nil
         }
         return name
-    }
-
-    private func saveRename() {
-        guard let category = renaming else { return }
-        renaming = nil
-        guard let name = validName(nameDraft, excluding: category) else { return }
-        category.name = name
-        try? context.save()
     }
 
     private func addCategory() {
@@ -119,5 +106,77 @@ struct CategoriesView: View {
             context.delete(category)
         }
         try? context.save()
+    }
+}
+
+/// One category: its name and the reminder new items in it start with.
+private struct CategoryDetailView: View {
+    @Environment(\.modelContext) private var context
+    @Bindable var category: ForLaterCategory
+    /// The other categories' names, so two can't share a name.
+    let otherNames: [String]
+
+    @State private var nameDraft = ""
+    @State private var weeklyLabel = ""
+
+    private var nameProblem: String? {
+        let name = nameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.isEmpty { return "A category needs a name." }
+        if otherNames.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) {
+            return "You already have a category called \(name)."
+        }
+        return nil
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                TextField("Name", text: $nameDraft)
+                    .disabled(category.isOther)
+                    .onSubmit(saveName)
+            } header: {
+                Text("Name")
+            } footer: {
+                if category.isOther {
+                    Text("Other is the catch-all category, so it can't be renamed.")
+                } else if let nameProblem {
+                    Text(nameProblem).foregroundStyle(.red)
+                }
+            }
+
+            Section {
+                Picker("New items", selection: $category.defaultReminderRaw) {
+                    Text(ReminderKind.daily.label).tag("")
+                    Text(ReminderKind.weekly.label).tag(ReminderKind.weekly.rawValue)
+                    Text(ReminderKind.none.label).tag(ReminderKind.none.rawValue)
+                }
+            } header: {
+                Text("Default reminder")
+            } footer: {
+                switch category.defaultReminder {
+                case .weekly:
+                    Text("New items here are only mentioned at your weekly check-in (\(weeklyLabel)). You can still change it on each item.")
+                case .none:
+                    Text("New items here never send a notification. They wait on your desk and show in your Today summary.")
+                default:
+                    Text("New items here are mentioned at your daily check-ins. Weekly suits things like recipes.")
+                }
+            }
+        }
+        .navigationTitle(category.name)
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            nameDraft = category.name
+            weeklyLabel = DataStore.settings(in: context).weeklyLabel
+        }
+        .onDisappear {
+            saveName()
+            try? context.save()
+        }
+    }
+
+    private func saveName() {
+        guard !category.isOther, nameProblem == nil else { return }
+        category.name = nameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
